@@ -442,6 +442,7 @@
 .contact-lines a:hover { text-decoration: underline; }
 .member-table { min-width: 900px; }
 .member-actions { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.member-actions > .danger-text { margin-left: auto; }
 .school-year-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .member-invitation-note { padding: 10px 18px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .member-invitation-note p { margin: 4px 0; }
@@ -574,10 +575,10 @@
 .member-phone-column { width: 14%; }
 .member-year-column { width: 7%; }
 .member-loan-column { width: 16%; }
-.member-action-column { width: 31%; }
+.member-action-column { width: 300px; }
 .member-table th, .member-table td { padding-left: 8px; padding-right: 8px; }
 .member-table th { white-space: normal; }
-.member-actions { gap: 12px; flex-wrap: wrap; }
+.member-actions { gap: 4px; flex-wrap: wrap; }
 .member-actions .text-action { padding: 6px 4px; gap: 3px; }
 .member-table .contact-lines { overflow: hidden; }
 .members-ledger .table-wrap { container-type: inline-size; }
