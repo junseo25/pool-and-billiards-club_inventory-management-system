@@ -9,6 +9,7 @@ import {
   LogOut,
   Moon,
   Package,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -57,7 +58,7 @@ type Member = {
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
-type Modal = { kind: 'profile-member'; memberId: string } | { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
+type Modal = { kind: 'edit-gear'; gearId: string } | { kind: 'profile-member'; memberId: string } | { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
 type SortKey = 'name' | 'category' | 'cueUse' | 'member' | 'updatedAt'
 
 function readStore<T,>(key: string, fallback: T): T {
@@ -188,6 +189,8 @@ function App() {
   const [historyScope, setHistoryScope] = useState<HistoryScope | null>(null)
   const [settingsSaved, setSettingsSaved] = useState(true)
   const [newGearCategory, setNewGearCategory] = useState<GearCategory>('Case')
+  const [isSavingGear, setIsSavingGear] = useState(false)
+  const [gearEditError, setGearEditError] = useState('')
   const [newGearCueUse, setNewGearCueUse] = useState<Exclude<CueUse, 'Not applicable'>>('Playing')
   const [serialDigits, setSerialDigits] = useState('')
   const [view, setView] = useState<View>('inventory')
@@ -351,6 +354,36 @@ function App() {
     setActivity((entries) => [event, ...entries.filter((entry) => entry.id !== event.id)])
     setDataError('')
     return event
+  }
+
+  function editGear(item: Gear) {
+    setNewGearCategory(item.category)
+    setNewGearCueUse(item.cueUse === 'Not applicable' ? 'Playing' : item.cueUse)
+    setSerialDigits(item.serial.replace(/\D/g, ''))
+    setGearEditError('')
+    setModal({ kind: 'edit-gear', gearId: item.id })
+  }
+
+  async function handleEditGear(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || modal?.kind !== 'edit-gear' || isSavingGear) return
+    const gearId = modal.gearId
+    const form = new FormData(event.currentTarget)
+    const name = String(form.get('name') ?? '').trim()
+    if (!name) { setGearEditError('Enter an equipment name.'); return }
+    setIsSavingGear(true)
+    setGearEditError('')
+    try {
+      const { data, error } = await supabase.from('equipment').update({
+        name, serial: serialDigits ? addCueUseSuffix(`${serialPrefix(newGearCategory)}-${serialDigits}`, newGearCategory === 'Shaft' || newGearCategory === 'Butt' ? newGearCueUse : 'Not applicable') : '', category: newGearCategory,
+        cue_use: newGearCategory === 'Shaft' || newGearCategory === 'Butt' ? newGearCueUse : 'Not applicable',
+      }).eq('id', gearId).select().single()
+      if (error) throw error
+      const updated: Gear = { id: data.id, name: data.name, category: data.category, cueUse: data.cue_use, serial: data.serial, memberId: data.member_id, updatedAt: data.updated_at }
+      setGear((items) => items.map((item) => item.id === gearId ? updated : item))
+      setModal(null)
+    } catch (error) { setGearEditError(errorMessage(error, 'Could not update the equipment.')) }
+    finally { setIsSavingGear(false) }
   }
 
   async function handleAddGear(event: FormEvent<HTMLFormElement>) {
@@ -857,6 +890,7 @@ function App() {
                               ? <button className="text-action return-action" onClick={() => returnGear(item)}><ArrowDownToLine size={15} /> Return</button>
                               : <button className="text-action issue-action" onClick={() => setModal({ kind: 'checkout', gearId: item.id })} disabled={activeMembers.length === 0}><ArrowUpDown size={15} /> Issue</button>}
                             <button className="text-action" aria-label={`History for ${item.name}`} onClick={() => openHistory({ gear: item.id })}><Clock3 size={15} /> History</button>
+                            <button className="text-action" aria-label={`Edit ${item.name}`} onClick={() => editGear(item)}><Pencil size={15} /> Edit</button>
                             <button className="icon-button delete-button" title="Remove equipment" aria-label={`Remove ${item.name}`} onClick={() => removeGear(item)}><Trash2 size={15} /></button>
                           </div></td>
                         </tr>
@@ -945,10 +979,17 @@ function App() {
         </div>
       </main>
 
-      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging && !isDeletingMember) setModal(null) }}>
+      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging && !isDeletingMember && !isSavingGear) setModal(null) }}>
         <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'profile-member' ? 'Member profile' : modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'edit-gear' ? 'Edit equipment' : modal.kind === 'profile-member' ? 'Member profile' : modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember || isSavingGear} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
           {modal.kind === 'profile-member' && members.filter((member) => member.id === modal.memberId).map((member) => <MemberProfile key={member.id} member={member} gear={gear} onEdit={() => setModal({ kind: 'edit-member', memberId: member.id })} onHistory={() => { setModal(null); openHistory({ member: member.id }) }} />)}
+          {modal.kind === 'edit-gear' && <form className="modal-form" onSubmit={handleEditGear}>
+            <label>Equipment name<input name="name" required autoFocus disabled={isSavingGear} defaultValue={gear.find((item) => item.id === modal.gearId)?.name ?? ''} /></label>
+            <label>Inventory ID <span className="optional">OPTIONAL</span><span className="serial-entry"><span className="serial-prefix">{serialPrefix(newGearCategory)}-</span><input name="serialDigits" aria-label="Serial number digits" disabled={isSavingGear} inputMode="numeric" pattern="[0-9]*" placeholder="Enter numbers" value={serialDigits} onChange={(event) => setSerialDigits(event.target.value.replace(/\D/g, ''))} />{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <span className="serial-suffix">-{cueUseSuffix(newGearCueUse)}</span>}</span></label>
+            <div className="form-grid"><label>Equipment type<select disabled={isSavingGear} value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Shaft' || newGearCategory === 'Butt') && <label>Cue use<select disabled={isSavingGear} value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
+            {gearEditError && <p className="gate-error" role="alert">{gearEditError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={isSavingGear} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={isSavingGear}>{isSavingGear ? 'Saving…' : 'Save changes'}</button></div>
+          </form>}
           {modal.kind === 'gear' && <form className="modal-form" onSubmit={handleAddGear}>
             <label>Equipment name<input name="name" required placeholder="e.g. Predator soft case" autoFocus /></label>
               <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>

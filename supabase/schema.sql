@@ -422,7 +422,7 @@ begin
   insert into public.school_years(label,start_date) values(year_label,year_start);
   -- A start date entered retrospectively assigns existing events to the correct
   -- period. Earlier events remain in their previous year, or unassigned.
-  update public.activity_log a set school_year_id = public.school_year_for_date(a.created_at);
+  update public.activity_log a set school_year_id = public.school_year_for_date(a.created_at) where a.school_year_id is distinct from public.school_year_for_date(a.created_at);
   update public.activity_log a set school_year = y.label from public.school_years y where y.id = a.school_year_id;
   return query select * from public.school_years order by start_date;
 end;
@@ -593,7 +593,7 @@ grant execute on function public.sync_member_roster(jsonb) to authenticated;
 -- Initial boundary selected by the club. Later years are created in Settings.
 insert into public.school_years(label,start_date)
 select '2026/27','2026-08-25'::date where not exists(select 1 from public.school_years);
-update public.activity_log a set school_year_id = public.school_year_for_date(a.created_at);
+update public.activity_log a set school_year_id = public.school_year_for_date(a.created_at) where a.school_year_id is distinct from public.school_year_for_date(a.created_at);
 update public.activity_log a set school_year = y.label from public.school_years y where y.id = a.school_year_id;
 
 -- Apply after 20261001_school_year_history.sql.
