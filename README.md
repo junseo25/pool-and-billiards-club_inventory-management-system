@@ -9,7 +9,8 @@ A responsive inventory and checkout application for the University of Virginia P
 - **Issue and return:** Record equipment checkouts and returns from the dedicated handoff workspace or the inventory list.
 - **Member directory:** Add and edit contact details and class year. Assigned equipment remains connected to the member record.
 - **Roster import:** Import a CSV or Excel (.xlsx) file or sync a link-accessible Google Sheet. Imports update matching members without removing members absent from the sheet.
-- **Settings:** Select light or dark appearance and customize the club name and season label.
+- **History:** Follow equipment and members across school years, with filters for member, item, equipment type, and serial number.
+- **Settings:** Select light or dark appearance, customize the club name, and define shared school years and start dates.
 
 ## Technology
 
@@ -93,9 +94,21 @@ The database contains four tables:
 
 All approved executives share the same club records. RLS checks the signed-in user against `executive_access` on every data request. The client uses only the Supabase public anon key; never put a Supabase `service_role` key in this repository or in browser code.
 
-Auth sessions persist across browser sessions. Operational records live in Supabase, so approved users see the same data across devices. Appearance, club name, season label, and the saved Sheet URL are client preferences and remain in that browser profile.
+Auth sessions persist across browser sessions. Operational records and school-year periods live in Supabase, so approved users see the same data across devices. Appearance, club name, and the saved Sheet URL are client preferences and remain in that browser profile.
 
 ## Google Sheets
+
+### UVA emails and school-year history
+
+Apply `supabase/migrations/20261001_school_year_history.sql` after the earlier migrations before deploying this app version. It initializes **2026/27** with the club's chosen start date, **2026-08-25**.
+
+Every imported roster row is scanned for an `@virginia.edu` address, even when it appears in Notes, another contact field, or an Excel hyperlink. A dedicated **UVA Email** column takes priority. An ambiguous row with multiple UVA addresses stops the import so the wrong email is not assigned. Name-plus-phone matching can update an existing member's email rather than create another member. Members display a **UVA Email** column.
+
+In **Settings → School years**, enter a new label such as `2027/28` and its start date. The previous period ends the day before that date. A new period must start after the latest configured start and have a later year label. Start dates are interpreted as midnight in Eastern Time. Future starts can be scheduled; the header shows the period active today. Retrospective starts reassign events on or after the chosen date. Events before the initial start remain **Unassigned**.
+
+**Activity / History** opens equipment history first, with member history and a handoff log alongside it. Filter by school year, equipment, member, equipment type (playing, breaking, or jump cues; cases; accessories; shafts; butts), or serial number. **History** buttons in Equipment and Members open that item's or member's timeline directly. All history pages are loaded rather than stopping at Supabase's default 1,000-row limit.
+
+New additions, checkouts, returns, and removals record stable equipment/member IDs plus name, serial, type, member email, handling executive, time, and school year. Handoffs and their log entries are saved together in a transaction. Removal preserves equipment history; member merging transfers history references while keeping the original name snapshots. Older entries only contain the names and dates originally recorded; missing serial/type/handler information is left unknown rather than inferred.
 
 Existing projects must run `supabase/migrations/20261001_approve_invited_executives.sql`, then `supabase/migrations/20261001_executive_roster.sql` in the Supabase SQL Editor before using this version. New projects can run the updated `supabase/schema.sql`.
 

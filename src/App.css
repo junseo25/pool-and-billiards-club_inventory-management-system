@@ -248,6 +248,31 @@
 .assigned-list { display: flex; flex-wrap: wrap; gap: 5px; }
 .assigned-list span { padding: 5px 7px; background: #eef0f4; color: #4b5368; font-size: 10px; }
 .activity-ledger { max-width: 950px; }
+.history-heading { padding: 20px; border-bottom: 1px solid var(--line); }
+.history-heading h2 { margin: 0 0 8px; font: 600 23px 'Source Serif 4', Georgia, serif; }
+.history-heading p { font-size: 12px; line-height: 1.6; color: #737989; }
+.history-modes { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.history-modes button { padding: 9px 12px; border: 1px solid #dfe2e8; background: transparent; color: var(--ink); font-size: 12px; cursor: pointer; }
+.history-modes button.selected { border-color: var(--uva-navy); box-shadow: inset 0 -2px var(--uva-orange); }
+.history-filters { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.history-filters label { display: grid; gap: 6px; font-size: 11px; font-weight: 600; color: #50586a; }
+.history-filters input, .history-filters select { min-width: 0; width: 100%; height: 38px; padding: 0 9px; border: 1px solid #dfe2e8; background: #fff; color: var(--ink); font: 12px 'Public Sans', sans-serif; }
+.history-filters input:focus, .history-filters select:focus { outline: 2px solid #8991a3; outline-offset: 1px; }
+.history-filters > button { align-self: end; min-height: 38px; }
+.history-count, .history-legacy-note { padding: 12px 20px; font-size: 11px; line-height: 1.6; color: #737989; }
+.history-legacy-note { padding-top: 0; }
+.history-group > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #f5f6f8; }
+.history-group h3 { margin: 0; font: 600 17px 'Source Serif 4', Georgia, serif; overflow-wrap: anywhere; }
+.history-group header span { font-size: 11px; white-space: nowrap; color: #737989; }
+.history-event { padding: 12px 0; }
+.history-event .activity-copy p { margin: 0; }
+.history-event small { line-height: 1.6; overflow-wrap: anywhere; }
+.history-event-date { display: grid; gap: 7px; justify-items: end; text-align: right; }
+.history-year { font-size: 11px; font-weight: 600; color: var(--ink); }
+.school-year-note { font-size: 12px; line-height: 1.6; color: #737989; }
+.school-year-list { list-style: none; padding: 0; margin: 10px 0 0; }
+.school-year-list li { display: grid; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.school-year-list span { font-size: 11px; line-height: 1.6; color: #737989; }
 .activity-list { padding: 2px 20px; }
 .activity-row { min-height: 72px; display: flex; align-items: center; gap: 13px; border-bottom: 1px solid #eff0eb; }
 .activity-row:last-child { border-bottom: 0; }
@@ -404,6 +429,11 @@
 .dark-theme .modal-intro strong { color: #fff; }
 .dark-theme .member-summary > div:not(.roster-import) > strong { color: #edf0f6; }
 .dark-theme .activity-row { border-color: #343d52; }
+.dark-theme .history-filters label, .dark-theme .history-heading p, .dark-theme .history-count, .dark-theme .history-legacy-note, .dark-theme .school-year-note, .dark-theme .school-year-list span { color: #b9c1cf; }
+.dark-theme .history-filters input, .dark-theme .history-filters select { border-color: #46516a; background: #1b2333; color: #e5e9f1; }
+.dark-theme .history-modes button { border-color: #46516a; color: #e5e9f1; }
+.dark-theme .history-modes button.selected { border-color: #8b96ad; }
+.dark-theme .history-group > header { background: #252e42; }
 .dark-theme .activity-icon.returned { background: #4b382a; color: #ffae62; }
 .dark-theme .activity-icon.removed { background: #493433; color: #f3a08b; }
 .dark-theme .activity-copy p strong { color: #ffad5f; }
@@ -444,6 +474,10 @@
 }
 
 @media (max-width: 720px) {
+  .history-filters { grid-template-columns: repeat(2,minmax(0,1fr)); padding: 14px 12px; }
+  .history-heading, .history-modes, .history-group > header { padding-right: 12px; padding-left: 12px; }
+  .history-event { flex-wrap: wrap; }
+  .history-event-date { width: 100%; margin-left: 47px; justify-items: start; text-align: left; }
   .app-shell { display: block; }
   .sidebar { min-height: 0; padding: 13px 16px 0; }
   .brand { margin: 0 0 12px; }

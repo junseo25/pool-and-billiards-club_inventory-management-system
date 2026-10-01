@@ -27,6 +27,9 @@ import { authCallbackError, isPasswordSetupLink, isSupabaseConfigured, supabase 
 import type { User } from '@supabase/supabase-js'
 import PhoneInput from './components/PhoneInput'
 import { formatUsPhone } from './lib/phone'
+import { rosterRows } from './lib/roster'
+import { easternDate, mapActivity, schoolYearForDate, type Activity, type SchoolYear } from './lib/history'
+import HistoryPanel, { type HistoryScope } from './components/HistoryPanel'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
 type CueUse = 'Playing' | 'Break' | 'Jump' | 'Not applicable'
@@ -50,14 +53,6 @@ type Member = {
   auth_user_id?: string | null
   profile_completed_at?: string | null
   invitation_sent_at?: string | null
-}
-
-type Activity = {
-  id: string
-  action: string
-  gearName: string
-  memberName: string
-  date: string
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
@@ -138,6 +133,19 @@ function sheetCsvUrl(rawUrl: string) {
   return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`
 }
 
+async function fetchActivity() {
+  if (!supabase) throw new Error('The secure database is not configured.')
+  const entries = new Map<string, Activity>()
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await supabase.from('activity_log').select('*')
+      .order('created_at', { ascending: false }).order('id', { ascending: false }).range(offset, offset + 999)
+    if (error) throw error
+    for (const row of data) entries.set(row.id, mapActivity(row))
+    if (data.length < 1000) break
+  }
+  return [...entries.values()]
+}
+
 function App() {
   const [gear, setGear] = useState<Gear[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -169,7 +177,12 @@ function App() {
   const [dataError, setDataError] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => readStore('pool-club-theme', 'light'))
   const [clubName, setClubName] = useState(() => readStore('pool-club-name', 'Break Pool Club'))
-  const [season, setSeason] = useState(() => readStore('pool-club-season', '2026–27 season'))
+  const [schoolYears, setSchoolYears] = useState<SchoolYear[]>([])
+  const [newYearLabel, setNewYearLabel] = useState('2027/28')
+  const [newYearStart, setNewYearStart] = useState(() => easternDate(new Date()))
+  const [yearError, setYearError] = useState('')
+  const [isSavingYear, setIsSavingYear] = useState(false)
+  const [historyScope, setHistoryScope] = useState<HistoryScope | null>(null)
   const [settingsSaved, setSettingsSaved] = useState(true)
   const [newGearCategory, setNewGearCategory] = useState<GearCategory>('Case')
   const [newGearCueUse, setNewGearCueUse] = useState<Exclude<CueUse, 'Not applicable'>>('Playing')
@@ -232,14 +245,15 @@ function App() {
           return
         }
 
-        const [equipmentResult, membersResult, activityResult] = await Promise.all([
+        const [equipmentResult, membersResult, activityRows, schoolYearResult] = await Promise.all([
           client.from('equipment').select('*').order('name'),
           client.from('members').select('*').order('name'),
-          client.from('activity_log').select('*').order('created_at', { ascending: false }),
+          fetchActivity(),
+          client.from('school_years').select('id,label,start_date').order('start_date'),
         ])
         if (equipmentResult.error) throw equipmentResult.error
         if (membersResult.error) throw membersResult.error
-        if (activityResult.error) throw activityResult.error
+        if (schoolYearResult.error) throw schoolYearResult.error
         if (!active) return
 
         setGear((equipmentResult.data ?? []).map((row) => ({
@@ -264,13 +278,14 @@ function App() {
         const ownMember = membersResult.data?.find((row) => row.auth_user_id === userId)
         setProfileName(ownMember?.name ?? '')
         setProfilePhone(ownMember?.phone ?? '')
-        setActivity((activityResult.data ?? []).map((row) => ({
-          id: row.id,
-          action: row.action,
-          gearName: row.gear_name,
-          memberName: row.member_name,
-          date: row.created_at,
-        })))
+        setActivity(activityRows)
+        const periods = schoolYearResult.data as SchoolYear[]
+        setSchoolYears(periods)
+        const lastYear = periods.at(-1)
+        if (lastYear) {
+          const nextStart = Number(lastYear.label.slice(0,4)) + 1
+          setNewYearLabel(`${nextStart}/${String(nextStart+1).slice(-2)}`)
+        }
         setDataError('')
         setWorkspaceAccess(true)
         setWorkspaceLoadedFor(userId)
@@ -317,18 +332,19 @@ function App() {
     [member.name, member.email, member.phone, member.year].some((value) => value.toLowerCase().includes(query.toLowerCase().trim())),
   ), [members, query])
 
-  async function logActivity(action: string, item: Gear, memberName: string) {
-    if (!supabase) return
-    const { data, error } = await supabase.from('activity_log').insert({
-      action,
-      gear_name: item.name,
-      member_name: memberName,
-    }).select().single()
+  async function recordHandoff(item: Gear, operation: 'Checked out' | 'Returned' | 'Removed', memberId?: string) {
+    if (!supabase) return null
+    const { data, error } = await supabase.rpc('record_equipment_handoff', {
+      equipment_id: item.id, operation, borrower_id: memberId ?? null,
+    }).single()
     if (error || !data) {
-      setDataError(error?.message ?? 'Could not save the activity record.')
-      return
+      setDataError(error?.message ?? 'Could not save the handoff and its history.')
+      return null
     }
-    setActivity((entries) => [{ id: data.id, action: data.action, gearName: data.gear_name, memberName: data.member_name, date: data.created_at }, ...entries])
+    const event = mapActivity(data as Record<string, unknown>)
+    setActivity((entries) => [event, ...entries.filter((entry) => entry.id !== event.id)])
+    setDataError('')
+    return event
   }
 
   async function handleAddGear(event: FormEvent<HTMLFormElement>) {
@@ -353,6 +369,9 @@ function App() {
     const item: Gear = { id: data.id, name: data.name, category: data.category as GearCategory, cueUse: data.cue_use as CueUse, serial: data.serial, memberId: data.member_id, updatedAt: data.updated_at }
     setGear((items) => [item, ...items])
     setDataError('')
+    const { data: historyRow, error: historyError } = await supabase.from('activity_log').select('*').eq('gear_id', item.id).eq('action', 'Added').maybeSingle()
+    if (historyError) setDataError(historyError.message)
+    if (historyRow) setActivity((entries) => [mapActivity(historyRow), ...entries])
     setModal(null)
   }
 
@@ -393,15 +412,9 @@ function App() {
     if (!item || item.memberId) return false
     const member = memberById.get(memberId)
     if (!member) return false
-    const updatedAt = new Date().toISOString()
-    const { error } = await supabase.from('equipment').update({ member_id: memberId, updated_at: updatedAt }).eq('id', gearId)
-    if (error) {
-      setDataError(error.message)
-      return false
-    }
-    setGear((items) => items.map((entry) => entry.id === gearId ? { ...entry, memberId, updatedAt: new Date().toISOString() } : entry))
-    setDataError('')
-    await logActivity('Checked out', item, member.name)
+    const event = await recordHandoff(item, 'Checked out', memberId)
+    if (!event) return false
+    setGear((items) => items.map((entry) => entry.id === gearId ? { ...entry, memberId, updatedAt: event.date } : entry))
     return true
   }
 
@@ -413,29 +426,18 @@ function App() {
 
   async function returnGear(item: Gear) {
     if (!supabase) return
-    const member = item.memberId ? memberById.get(item.memberId) : undefined
-    const updatedAt = new Date().toISOString()
-    const { error } = await supabase.from('equipment').update({ member_id: null, updated_at: updatedAt }).eq('id', item.id)
-    if (error) {
-      setDataError(error.message)
-      return
-    }
-    setGear((items) => items.map((entry) => entry.id === item.id ? { ...entry, memberId: null, updatedAt: new Date().toISOString() } : entry))
-    setDataError('')
-    await logActivity('Returned', item, member?.name ?? 'Unknown member')
+    const event = await recordHandoff(item, 'Returned')
+    if (!event) return
+    setGear((items) => items.map((entry) => entry.id === item.id ? { ...entry, memberId: null, updatedAt: event.date } : entry))
   }
 
   async function removeGear(item: Gear) {
     if (!window.confirm(`Remove ${item.name} from the inventory?`)) return
     if (!supabase) return
-    const { error } = await supabase.from('equipment').delete().eq('id', item.id)
-    if (error) {
-      setDataError(error.message)
-      return
-    }
+    const event = await recordHandoff(item, 'Removed')
+    if (!event) return
     setGear((items) => items.filter((entry) => entry.id !== item.id))
     setDataError('')
-    await logActivity('Removed', item, item.memberId ? memberById.get(item.memberId)?.name ?? 'Unknown member' : 'Club inventory')
   }
 
   function toggleSort(key: SortKey) {
@@ -445,36 +447,38 @@ function App() {
   function saveSettings() {
     localStorage.setItem('pool-club-theme', JSON.stringify(theme))
     localStorage.setItem('pool-club-name', JSON.stringify(clubName))
-    localStorage.setItem('pool-club-season', JSON.stringify(season))
     setSettingsSaved(true)
+  }
+
+  async function handleStartSchoolYear(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    setYearError('')
+    setIsSavingYear(true)
+    try {
+      const { data, error } = await supabase.rpc('start_school_year', { year_label: newYearLabel.trim(), year_start: newYearStart })
+      if (error) throw error
+      const years = data as SchoolYear[]
+      setSchoolYears(years)
+      const latest = years.at(-1)
+      if (latest) {
+        const next = Number(latest.label.slice(0,4)) + 1
+        setNewYearLabel(`${next}/${String(next+1).slice(-2)}`)
+      }
+      setActivity(await fetchActivity())
+    } catch (error) { setYearError(errorMessage(error, 'Could not save the school year.')) }
+    finally { setIsSavingYear(false) }
+  }
+
+  function openHistory(scope: HistoryScope) {
+    setHistoryScope(scope)
+    setView('activity')
+    setQuery('')
   }
 
   async function importMembers(source: string | string[][]) {
     if (!supabase) throw new Error('The secure database is not configured.')
-    const rows = typeof source === 'string' ? parseCsv(source) : source
-    if (rows.length < 2) throw new Error('The sheet is empty or has no member rows.')
-    const headers = rows[0].map((header) => header.toLowerCase().replace(/[_-]/g, ' ').trim())
-    const column = (...names: string[]) => headers.findIndex((header) => names.includes(header))
-    const nameColumn = column('name', 'full name', 'member', 'member name')
-    const firstNameColumn = column('first name', 'first')
-    const lastNameColumn = column('last name', 'last')
-    const emailColumn = column('email', 'email address', 'e mail')
-    const phoneColumn = column('phone', 'phone number', 'mobile', 'contact number')
-    const yearColumn = column('year', 'class year', 'graduation year', 'grad year')
-    if (nameColumn < 0 && firstNameColumn < 0) throw new Error('Add a "Name" or "First name" column to the sheet.')
-
-    const imported = rows.slice(1).flatMap((values) => {
-      const name = nameColumn >= 0 ? values[nameColumn] ?? '' : `${values[firstNameColumn] ?? ''} ${lastNameColumn >= 0 ? values[lastNameColumn] ?? '' : ''}`.trim()
-      if (!name) return []
-      const email = emailColumn >= 0 ? values[emailColumn] ?? '' : ''
-      return [{
-        name,
-        email,
-        phone: phoneColumn >= 0 ? values[phoneColumn] ?? '' : '',
-        year: yearColumn >= 0 ? values[yearColumn] ?? '' : '',
-      }]
-    })
-    if (imported.length === 0) throw new Error('No members with names were found in the sheet.')
+    const imported = rosterRows(typeof source === 'string' ? parseCsv(source) : source)
     const { data, error } = await supabase.rpc('sync_member_roster', { roster: imported })
     if (error) throw error
     setMembers(data as Member[])
@@ -497,7 +501,7 @@ function App() {
     } catch (error) {
       setSyncMessage(error instanceof TypeError
         ? 'Google redirected this sheet to sign-in or blocked its CSV export. Set General access to Anyone with the link (Viewer), publish to the web, or import a CSV file. Private sheets require Google sign-in integration.'
-        : error instanceof Error ? error.message : 'Could not read the sheet. Check the link and sharing settings.')
+        : errorMessage(error, 'Could not read the sheet. Check the link and sharing settings.'))
     } finally {
       setIsSyncing(false)
     }
@@ -517,6 +521,9 @@ function App() {
         const rows: string[][] = []
         sheet.eachRow((row) => {
           const values = Array.from({ length: sheet.columnCount }, (_, index) => row.getCell(index + 1).text.trim())
+          row.eachCell((cell) => {
+            if (cell.value && typeof cell.value === 'object' && 'hyperlink' in cell.value) values.push(cell.value.hyperlink)
+          })
           if (values.some(Boolean)) rows.push(values)
         })
         await importMembers(rows)
@@ -526,7 +533,7 @@ function App() {
         throw new Error('Choose a CSV or .xlsx file. Save older .xls workbooks as .xlsx first.')
       }
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Could not read this roster file.')
+      setSyncMessage(errorMessage(error, 'Could not read this roster file.'))
     } finally {
       setIsSyncing(false)
     }
@@ -626,6 +633,7 @@ function App() {
       if (error) throw error
       setMembers(data as Member[])
       setGear((items) => items.map((item) => item.memberId === sourceId ? { ...item, memberId: mergeTargetId } : item))
+      setActivity((entries) => entries.map((entry) => entry.memberId === sourceId ? { ...entry, memberId: mergeTargetId } : entry))
       setModal(null)
     } catch (error) {
       setMergeError(errorMessage(error, 'Could not merge these members.'))
@@ -639,7 +647,10 @@ function App() {
     setAuthPassword('')
   }
 
-  const pageTitle = view === 'inventory' ? 'Equipment inventory' : view === 'loans' ? 'Issue / return' : view === 'members' ? 'Club members' : view === 'settings' ? 'Settings' : 'Recent activity'
+  const schoolYear = schoolYearForDate(new Date(), schoolYears)
+  const latestYear = schoolYears.at(-1)
+  const nextAllowedStart = latestYear ? new Date(Date.parse(`${latestYear.start_date}T00:00:00Z`) + 86400000).toISOString().slice(0,10) : undefined
+  const pageTitle = view === 'inventory' ? 'Equipment inventory' : view === 'loans' ? 'Issue / return' : view === 'members' ? 'Club members' : view === 'settings' ? 'Settings' : 'Equipment & member history'
   const pageDescription = view === 'inventory'
     ? 'Track every piece of club equipment, from the shelf to the table.'
     : view === 'loans'
@@ -648,7 +659,7 @@ function App() {
       ? 'Member contact details and current equipment loans.'
       : view === 'settings'
         ? 'Set the appearance and club details for this workspace.'
-        : 'A record of equipment checkouts, returns, and removals.'
+        : 'Follow equipment and members across school years, with handoff details for every recorded event.'
 
   if (!isSupabaseConfigured) {
     return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><section className="auth-panel"><span className="eyebrow">SECURE WORKSPACE</span><h1>Database setup required</h1><p>Add your Supabase project URL and public anon key to a local <code>.env.local</code> file. Use <code>.env.example</code> as the template, then restart the dev server.</p><p>The database schema and executive-only row-level security policies are in <code>supabase/schema.sql</code>.</p></section></div>
@@ -724,8 +735,8 @@ function App() {
           <button className={view === 'members' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('members'); setQuery('') }}>
             <Users size={18} /><span>Members</span><span className="nav-count">{members.length}</span>
           </button>
-          <button className={view === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('activity'); setQuery('') }}>
-            <Clock3 size={18} /><span>Activity</span>
+          <button className={view === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('activity'); setQuery(''); setHistoryScope(null) }}>
+            <Clock3 size={18} /><span>Activity / History</span>
           </button>
           <button className={view === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('settings'); setQuery('') }}>
             <SettingsIcon size={18} /><span>Settings</span>
@@ -741,7 +752,7 @@ function App() {
       <main className="main-panel">
         <header className="topbar">
           <div className="breadcrumb"><span>{clubName}</span><span className="crumb-slash">/</span><strong>{pageTitle}</strong></div>
-          <div className="topbar-right"><span className="year-tag">{season}</span><span className="avatar">{authUser.email?.[0]?.toUpperCase() ?? 'E'}</span><span className="exec-label">{authUser.email}</span><button className="icon-button sign-out-button" title="Sign out" aria-label="Sign out" onClick={() => { void handleSignOut() }}><LogOut size={16} /></button></div>
+          <div className="topbar-right"><span className="year-tag">{schoolYear === 'Unassigned' ? 'Set school year' : schoolYear}</span><span className="avatar">{authUser.email?.[0]?.toUpperCase() ?? 'E'}</span><span className="exec-label">{authUser.email}</span><button className="icon-button sign-out-button" title="Sign out" aria-label="Sign out" onClick={() => { void handleSignOut() }}><LogOut size={16} /></button></div>
         </header>
 
         <div className="page-content">
@@ -794,6 +805,7 @@ function App() {
                             {item.memberId
                               ? <button className="text-action return-action" onClick={() => returnGear(item)}><ArrowDownToLine size={15} /> Return</button>
                               : <button className="text-action issue-action" onClick={() => setModal({ kind: 'checkout', gearId: item.id })} disabled={members.length === 0}><ArrowUpDown size={15} /> Issue</button>}
+                            <button className="text-action" aria-label={`History for ${item.name}`} onClick={() => openHistory({ gear: item.id })}><Clock3 size={15} /> History</button>
                             <button className="icon-button delete-button" title="Remove equipment" aria-label={`Remove ${item.name}`} onClick={() => removeGear(item)}><Trash2 size={15} /></button>
                           </div></td>
                         </tr>
@@ -842,10 +854,10 @@ function App() {
               <section className="member-summary"><div><span className="stat-label">ACTIVE ROSTER</span><strong>{members.length.toString().padStart(2, '0')}</strong><span className="stat-foot">members on file</span></div><div><span className="stat-label">CURRENT LOANS</span><strong>{loanedCount.toString().padStart(2, '0')}</strong><span className="stat-foot">items assigned to members</span></div><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import CSV or Excel roster"><ArrowDownToLine size={15} /><input type="file" aria-label="Import CSV or Excel roster" disabled={isSyncing} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import CSV / Excel (.xlsx).'}</span></div></section>
               <section className="ledger-section members-ledger"><div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
                 <div className="section-toolbar"><div className="section-title"><h2>Member directory</h2><span>{members.length} MEMBERS</span></div><label className="search-field"><Search size={16} /><input aria-label="Search members" placeholder="Search members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label></div>
-                <div className="table-wrap"><table className="data-table member-table"><thead><tr><th>MEMBER</th><th>EMAIL</th><th>PHONE</th><th>CLASS YEAR</th><th>EQUIPMENT ON LOAN</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
+                <div className="table-wrap"><table className="data-table member-table"><thead><tr><th>MEMBER</th><th>UVA EMAIL</th><th>PHONE</th><th>CLASS YEAR</th><th>EQUIPMENT ON LOAN</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
                   {visibleMembers.map((member) => {
                     const assigned = gear.filter((item) => item.memberId === member.id)
-                    return <tr key={member.id}><td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><strong>{member.name}</strong></div></td><td><div className="contact-lines">{member.email ? <a href={`mailto:${member.email}`}><Mail size={14} />{member.email}</a> : <span className="muted">No email</span>}</div></td><td><div className="contact-lines">{member.phone ? <span><Phone size={14} />{formatUsPhone(member.phone)}</span> : <span className="muted">No phone</span>}</div></td><td>{member.year ? <span className="year-value">' {member.year.slice(-2)}</span> : <span className="muted">—</span>}</td><td>{assigned.length ? <div className="assigned-list">{assigned.map((item) => <span key={item.id}>{item.name}</span>)}</div> : <span className="muted">No equipment assigned</span>}</td><td><div className="member-actions"><button className="text-action edit-member-action" aria-label={`Edit ${member.name}`} onClick={() => setModal({ kind: 'edit-member', memberId: member.id })}><Pencil size={14} /> Edit</button><button className="text-action" aria-label={`Invite ${member.name}`} disabled={!member.email || Boolean(member.auth_user_id) || Boolean(invitingMemberId)} title={member.auth_user_id ? 'This member already has an account' : !member.email ? 'Add an email first' : 'Send an invitation granting executive access'} onClick={() => { void inviteMember(member) }}><Mail size={14} />{invitingMemberId === member.id ? 'Sending…' : member.auth_user_id ? 'Account linked' : 'Invite'}</button></div></td></tr>
+                    return <tr key={member.id}><td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><strong>{member.name}</strong></div></td><td><div className="contact-lines">{member.email ? <a href={`mailto:${member.email}`}><Mail size={14} />{member.email}</a> : <span className="muted">No email</span>}</div></td><td><div className="contact-lines">{member.phone ? <span><Phone size={14} />{formatUsPhone(member.phone)}</span> : <span className="muted">No phone</span>}</div></td><td>{member.year ? <span className="year-value">' {member.year.slice(-2)}</span> : <span className="muted">—</span>}</td><td>{assigned.length ? <div className="assigned-list">{assigned.map((item) => <span key={item.id}>{item.name}</span>)}</div> : <span className="muted">No equipment assigned</span>}</td><td><div className="member-actions"><button className="text-action" aria-label={`History for ${member.name}`} onClick={() => openHistory({ member: member.id })}><Clock3 size={14} /> History</button><button className="text-action edit-member-action" aria-label={`Edit ${member.name}`} onClick={() => setModal({ kind: 'edit-member', memberId: member.id })}><Pencil size={14} /> Edit</button><button className="text-action" aria-label={`Invite ${member.name}`} disabled={!member.email || Boolean(member.auth_user_id) || Boolean(invitingMemberId)} title={member.auth_user_id ? 'This member already has an account' : !member.email ? 'Add an email first' : 'Send an invitation granting executive access'} onClick={() => { void inviteMember(member) }}><Mail size={14} />{invitingMemberId === member.id ? 'Sending…' : member.auth_user_id ? 'Account linked' : 'Invite'}</button></div></td></tr>
                   })}
                   {visibleMembers.length === 0 && <tr><td className="empty-row" colSpan={6}>{members.length === 0 ? 'No members have been added yet.' : `No members match “${query}”.`}</td></tr>}
                 </tbody></table></div>
@@ -854,13 +866,7 @@ function App() {
             </>
           )}
 
-          {view === 'activity' && (
-            <section className="ledger-section activity-ledger">
-              <div className="section-toolbar"><div className="section-title"><h2>Handoff history</h2><span>{activity.length} EVENTS</span></div></div>
-              <div className="activity-list">{activity.length ? activity.map((entry) => <article className="activity-row" key={entry.id}><span className={`activity-icon ${entry.action.toLowerCase().replace(' ', '-')}`}>{entry.action === 'Returned' ? <ArrowDownToLine size={17} /> : entry.action === 'Removed' ? <Trash2 size={16} /> : <ArrowUpDown size={17} />}</span><div className="activity-copy"><p><strong>{entry.action}</strong> <span>{entry.gearName}</span></p><small>{entry.memberName}</small></div><time>{formatDate(entry.date)}</time></article>) : <div className="empty-row">No activity has been recorded yet.</div>}</div>
-              <div className="table-footer"><span>NEWEST FIRST</span><span>Checkouts and returns are logged automatically.</span></div>
-            </section>
-          )}
+          {view === 'activity' && <HistoryPanel key={JSON.stringify(historyScope)} entries={activity} gear={gear} members={members} schoolYears={schoolYears} scope={historyScope} />}
           {view === 'settings' && (
             <section className="settings-section">
               <div className="settings-group">
@@ -874,10 +880,19 @@ function App() {
                 <div className="settings-copy"><h2>Club details</h2><p>These details appear in the workspace header and footer.</p></div>
                 <div className="settings-fields">
                   <label>Club name<input value={clubName} maxLength={48} onChange={(event) => { setClubName(event.target.value); setSettingsSaved(false) }} placeholder="Break Pool Club" /></label>
-                  <label>Season label<input value={season} maxLength={32} onChange={(event) => { setSeason(event.target.value); setSettingsSaved(false) }} placeholder="2026–27 season" /></label>
+
                 </div>
               </div>
               <div className="settings-actions"><p className="settings-saved" aria-live="polite">{settingsSaved ? 'All changes saved on this device.' : 'You have unsaved changes.'}</p><button className="primary-button" onClick={saveSettings}><Save size={16} /> Save settings</button></div>
+              <form className="settings-group school-year-settings" onSubmit={handleStartSchoolYear}>
+                <div className="settings-copy"><h2>School years</h2><p>Choose when each school year begins. The previous year ends the day before that start date. These settings apply to everyone.</p><p>Current school year: <strong>{schoolYear}</strong></p></div>
+                <div className="settings-fields"><label>New school year<input required pattern="[0-9]{4}/[0-9]{2}" title="Use consecutive years such as 2027/28" placeholder="2027/28" value={newYearLabel} onChange={(event) => setNewYearLabel(event.target.value)} /></label><label>Start date<input required type="date" min={nextAllowedStart} value={newYearStart} onChange={(event) => setNewYearStart(event.target.value)} /></label>
+                  {latestYear && <p className="school-year-note">Start after {latestYear.start_date}. Earlier activity stays in its original school year.</p>}
+                  {yearError && <p className="gate-error" role="alert">{yearError}</p>}
+                  <button type="submit" className="primary-button" disabled={isSavingYear}>{isSavingYear ? 'Saving school year…' : 'Save new school year'}</button>
+                  <ul className="school-year-list">{schoolYears.map((year,index) => <li key={year.id}><strong>{year.label}</strong><span>From {year.start_date}{schoolYears[index+1] ? ` · until ${schoolYears[index+1].start_date} (exclusive)` : ' · open until the next school year'}</span></li>)}</ul>
+                </div>
+              </form>
             </section>
           )}
           <footer className="page-footer"><span>{clubName} <span>·</span> Equipment desk</span><span>Shared club data <i /></span></footer>
@@ -894,7 +909,7 @@ function App() {
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit"><Plus size={16} /> Add item</button></div>
           </form>}
           {(modal.kind === 'member' || modal.kind === 'edit-member') && <form className="modal-form" onSubmit={(event) => handleMemberSubmit(event, modal.kind === 'edit-member' ? modal.memberId : undefined)}>
-            <label>Full name<input name="name" required placeholder="Member name" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.name ?? '' : ''} autoFocus /></label><label>Email<input name="email" type="email" placeholder="name@virginia.edu" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.email ?? '' : ''} /></label><div className="form-grid"><label>Phone<PhoneInput key={modal.kind === 'edit-member' ? modal.memberId : 'new-member'} defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.phone ?? '' : ''} /></label><label>Class year<input name="year" inputMode="numeric" placeholder="2027" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.year ?? '' : ''} /></label></div>
+            <label>Full name<input name="name" required placeholder="Member name" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.name ?? '' : ''} autoFocus /></label><label>UVA Email<input name="email" type="email" placeholder="name@virginia.edu" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.email ?? '' : ''} /></label><div className="form-grid"><label>Phone<PhoneInput key={modal.kind === 'edit-member' ? modal.memberId : 'new-member'} defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.phone ?? '' : ''} /></label><label>Class year<input name="year" inputMode="numeric" placeholder="2027" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.year ?? '' : ''} /></label></div>
             <div className="modal-actions">{modal.kind === 'edit-member' && <button type="button" className="secondary-button merge-launch" onClick={() => { setMergeTargetId(''); setMergeError(''); setModal({ kind: 'merge-member', memberId: modal.memberId }) }}>Merge duplicate</button>}<button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit">{modal.kind === 'edit-member' ? 'Save changes' : <><Plus size={16} /> Add member</>}</button></div>
           </form>}
           {modal.kind === 'merge-member' && <form className="modal-form" onSubmit={handleMerge}>
