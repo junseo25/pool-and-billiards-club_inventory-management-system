@@ -56,7 +56,7 @@ type Member = {
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
-type Modal = { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
+type Modal = { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
 type SortKey = 'name' | 'category' | 'cueUse' | 'member' | 'updatedAt'
 
 function readStore<T,>(key: string, fallback: T): T {
@@ -169,6 +169,8 @@ function App() {
   const [mergeTargetId, setMergeTargetId] = useState('')
   const [mergeError, setMergeError] = useState('')
   const [isMerging, setIsMerging] = useState(false)
+  const [isDeletingMember, setIsDeletingMember] = useState(false)
+  const [deleteMemberError, setDeleteMemberError] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [workspaceAccess, setWorkspaceAccess] = useState<boolean | null>(null)
   const [workspaceLoadedFor, setWorkspaceLoadedFor] = useState<string | null>(null)
@@ -647,6 +649,26 @@ function App() {
     } finally { setIsMerging(false) }
   }
 
+  function confirmDeleteMember(memberId: string) {
+    setDeleteMemberError('')
+    setModal({ kind: 'delete-member', memberId })
+  }
+
+  async function handleDeleteMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || modal?.kind !== 'delete-member') return
+    const memberId = modal.memberId
+    setDeleteMemberError('')
+    setIsDeletingMember(true)
+    try {
+      const { error } = await supabase.rpc('delete_member', { member_id_to_delete: memberId })
+      if (error) throw error
+      setMembers((people) => people.filter((member) => member.id !== memberId))
+      setModal(null)
+    } catch (error) { setDeleteMemberError(errorMessage(error, 'Could not delete this member.')) }
+    finally { setIsDeletingMember(false) }
+  }
+
   async function handleSignOut() {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
@@ -862,9 +884,9 @@ function App() {
               <div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
               <MemberDirectory title="Active member directory" members={visibleMembers.filter(isActiveMember)} total={activeMembers.length} gear={gear} invitingMemberId={invitingMemberId}
                 search={<label className="search-field"><Search size={16} /><input aria-label="Search active and emeritus members" placeholder="Search all members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label>}
-                onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
+                onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
               <MemberDirectory title="Emeritus" members={visibleMembers.filter((member) => member.is_emeritus)} total={emeritusMembers.length} gear={gear} invitingMemberId={invitingMemberId}
-                onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
+                onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
             </>
           )}
 
@@ -901,9 +923,9 @@ function App() {
         </div>
       </main>
 
-      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging) setModal(null) }}>
+      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging && !isDeletingMember) setModal(null) }}>
         <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
           {modal.kind === 'gear' && <form className="modal-form" onSubmit={handleAddGear}>
             <label>Equipment name<input name="name" required placeholder="e.g. Predator soft case" autoFocus /></label>
               <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
@@ -921,6 +943,15 @@ function App() {
             {mergeTargetId && <div className="merge-preview"><strong>{members.find((member) => member.id === mergeTargetId)?.name} will remain</strong><p>Existing contact details on this record are kept. Empty fields are filled from the duplicate. All loans are kept. If either record is emeritus, the merged member stays emeritus.</p></div>}
             {mergeError && <p className="gate-error" role="alert">{mergeError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" disabled={isMerging} onClick={() => setModal({ kind: 'edit-member', memberId: modal.memberId })}>Back</button><button className="primary-button" type="submit" disabled={isMerging || !mergeTargetId}>{isMerging ? 'Merging…' : 'Merge members'}</button></div>
+          </form>}
+          {modal.kind === 'delete-member' && <form className="modal-form" onSubmit={handleDeleteMember}>
+            <p className="modal-intro">Delete <strong>{members.find((member) => member.id === modal.memberId)?.name}</strong> from the directory? Their equipment and handoff history will be kept.</p>
+            {members.find((member) => member.id === modal.memberId)?.auth_user_id && <p className="modal-intro">This also removes their executive access. Their Supabase sign-in account remains.</p>}
+            {gear.some((item) => item.memberId === modal.memberId) && <p className="gate-error" role="alert">Return or reassign all equipment before deleting this member.</p>}
+            {members.find((member) => member.id === modal.memberId)?.auth_user_id === authUser.id && <p className="gate-error" role="alert">You cannot delete your own account. Another executive must do this.</p>}
+            <p className="modal-intro">A future roster import can add this person again if they are still in the source sheet.</p>
+            {deleteMemberError && <p className="gate-error" role="alert">{deleteMemberError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={isDeletingMember} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button danger-button" disabled={isDeletingMember || gear.some((item) => item.memberId === modal.memberId) || members.find((member) => member.id === modal.memberId)?.auth_user_id === authUser.id}>{isDeletingMember ? 'Deleting…' : 'Delete member'}</button></div>
           </form>}
           {modal.kind === 'checkout' && <form className="modal-form" onSubmit={(event) => handleCheckout(event, modal.gearId)}>
             <p className="modal-intro">Select the member borrowing <strong>{gear.find((item) => item.id === modal.gearId)?.name}</strong>.</p><label>Issue to<select name="member" required defaultValue=""><option value="" disabled>Select a member</option>{activeMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>

@@ -99,6 +99,12 @@ Auth sessions persist across browser sessions. Operational records and school-ye
 
 ## Google Sheets
 
+### Deleting members
+
+Run `supabase/migrations/20261001_delete_members.sql` in the Supabase SQL Editor before deploying the deletion controls. Both directory sections include **Delete** beside Edit, with a confirmation dialog. Return or reassign all equipment before deleting a member. Executives cannot delete their own linked member record.
+
+Deletion preserves activity history. For a member linked to a login, it also removes executive access while retaining the Supabase Auth account. Remove the person from your source roster if future imports should not add them again.
+
 ### Emeritus members
 
 Run `supabase/migrations/20261001_emeritus_members.sql` after the school-year history migration before deploying this app version. Existing members start as active. Use **Add member** or **Edit → Membership** to choose **Active member** or **Emeritus**. Active and emeritus members have separate directory sections; the shared search applies to both. Emeritus records remain available in history and retain existing loans and login links.

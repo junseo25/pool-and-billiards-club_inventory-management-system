@@ -565,3 +565,7 @@
 .stat-dot.loaned { background: #3b9757; }
 .stat-dot.available { background: #d79a29; }
 .dark-theme .item-name[class*="equipment-"] strong { color: var(--equipment-color); }
+.text-action.danger-text { color: #b12727; }
+.dark-theme .text-action.danger-text { color: #ffb0a7; }
+.primary-button.danger-button { background: #b12727; color: #fff; }
+.primary-button.danger-button:hover:not(:disabled) { background: #921f1f; }
