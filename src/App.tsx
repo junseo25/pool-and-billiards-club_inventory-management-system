@@ -7,11 +7,8 @@ import {
   Check,
   Clock3,
   LogOut,
-  Mail,
   Moon,
   Package,
-  Pencil,
-  Phone,
   Plus,
   RefreshCw,
   Search,
@@ -26,10 +23,12 @@ import './App.css'
 import { authCallbackError, isPasswordSetupLink, isSupabaseConfigured, supabase } from './lib/supabase'
 import type { User } from '@supabase/supabase-js'
 import PhoneInput from './components/PhoneInput'
-import { formatUsPhone } from './lib/phone'
 import { rosterRows } from './lib/roster'
 import { easternDate, mapActivity, schoolYearForDate, type Activity, type SchoolYear } from './lib/history'
 import HistoryPanel, { type HistoryScope } from './components/HistoryPanel'
+import MemberDirectory from './components/MemberDirectory'
+import EquipmentLabel from './components/EquipmentLabel'
+import { isActiveMember } from './lib/membership'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
 type CueUse = 'Playing' | 'Break' | 'Jump' | 'Not applicable'
@@ -53,6 +52,7 @@ type Member = {
   auth_user_id?: string | null
   profile_completed_at?: string | null
   invitation_sent_at?: string | null
+  is_emeritus?: boolean
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
@@ -274,6 +274,7 @@ function App() {
           auth_user_id: row.auth_user_id,
           profile_completed_at: row.profile_completed_at,
           invitation_sent_at: row.invitation_sent_at,
+          is_emeritus: row.is_emeritus,
         })))
         const ownMember = membersResult.data?.find((row) => row.auth_user_id === userId)
         setProfileName(ownMember?.name ?? '')
@@ -304,6 +305,8 @@ function App() {
   }, [currentUserId, workspaceRetry])
 
   const memberById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members])
+  const activeMembers = members.filter(isActiveMember)
+  const emeritusMembers = members.filter((member) => member.is_emeritus)
   const availableGear = gear.filter((item) => !item.memberId)
   const loanedGear = gear.filter((item) => item.memberId !== null)
   const availableCount = availableGear.length
@@ -384,6 +387,7 @@ function App() {
       email: String(form.get('email')).trim(),
       phone: String(form.get('phone')).trim(),
       year: String(form.get('year')).trim(),
+      is_emeritus: form.get('membership') === 'emeritus',
     }
     const { data, error } = memberId
       ? await supabase.from('members').update(memberData).eq('id', memberId).select().single()
@@ -411,7 +415,10 @@ function App() {
     const item = gear.find((entry) => entry.id === gearId)
     if (!item || item.memberId) return false
     const member = memberById.get(memberId)
-    if (!member) return false
+    if (!member || member.is_emeritus) {
+      setDataError('Choose an active member. Emeritus members cannot receive new loans.')
+      return false
+    }
     const event = await recordHandoff(item, 'Checked out', memberId)
     if (!event) return false
     setGear((items) => items.map((entry) => entry.id === gearId ? { ...entry, memberId, updatedAt: event.date } : entry))
@@ -733,7 +740,7 @@ function App() {
             <Package size={18} /><span>Equipment</span><span className="nav-count">{gear.length}</span>
           </button>
           <button className={view === 'members' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('members'); setQuery('') }}>
-            <Users size={18} /><span>Members</span><span className="nav-count">{members.length}</span>
+            <Users size={18} /><span>Members</span><span className="nav-count">{activeMembers.length}</span>
           </button>
           <button className={view === 'activity' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('activity'); setQuery(''); setHistoryScope(null) }}>
             <Clock3 size={18} /><span>Activity / History</span>
@@ -796,15 +803,15 @@ function App() {
                       {visibleGear.map((item) => {
                         const assignedMember = item.memberId ? memberById.get(item.memberId) : undefined
                         return <tr key={item.id}>
-                          <td><div className="item-name"><span className={`item-symbol ${item.category.toLowerCase()}`}><Package size={16} /></span><span><strong>{item.name}</strong><small>{item.serial || 'No ID tag'}</small></span></div></td>
+                          <td><EquipmentLabel item={item} member={item.memberId ? memberById.get(item.memberId) : undefined} /></td>
                           <td><span className="category-label">{item.category}</span></td>
                           <td><span className={`cue-use ${item.cueUse.toLowerCase().replaceAll(' ', '-')}`}>{item.cueUse === 'Not applicable' ? '—' : `${item.cueUse} cue`}</span></td>
-                          <td>{assignedMember ? <div className="member-cell"><span className="mini-avatar">{assignedMember.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span>{assignedMember.name}</span></div> : <span className="available-label"><i />Available</span>}</td>
+                          <td>{assignedMember ? <div className="member-cell"><span className="mini-avatar">{assignedMember.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span>{assignedMember.name}</span></div> : item.memberId ? <span className="equipment-unverified">Borrower missing — review loan</span> : <span className="reserve-label"><i />In reserve</span>}</td>
                           <td className="date-cell">{formatDate(item.updatedAt)}</td>
                           <td><div className="row-actions">
                             {item.memberId
                               ? <button className="text-action return-action" onClick={() => returnGear(item)}><ArrowDownToLine size={15} /> Return</button>
-                              : <button className="text-action issue-action" onClick={() => setModal({ kind: 'checkout', gearId: item.id })} disabled={members.length === 0}><ArrowUpDown size={15} /> Issue</button>}
+                              : <button className="text-action issue-action" onClick={() => setModal({ kind: 'checkout', gearId: item.id })} disabled={activeMembers.length === 0}><ArrowUpDown size={15} /> Issue</button>}
                             <button className="text-action" aria-label={`History for ${item.name}`} onClick={() => openHistory({ gear: item.id })}><Clock3 size={15} /> History</button>
                             <button className="icon-button delete-button" title="Remove equipment" aria-label={`Remove ${item.name}`} onClick={() => removeGear(item)}><Trash2 size={15} /></button>
                           </div></td>
@@ -824,22 +831,22 @@ function App() {
               <div className="loan-overview">
                 <div><span className="stat-label">CURRENTLY ON LOAN</span><strong>{loanedCount.toString().padStart(2, '0')}</strong></div>
                 <div><span className="stat-label">READY TO ISSUE</span><strong>{availableCount.toString().padStart(2, '0')}</strong></div>
-                <div><span className="stat-label">ACTIVE MEMBERS</span><strong>{members.length.toString().padStart(2, '0')}</strong></div>
+                <div><span className="stat-label">ACTIVE MEMBERS</span><strong>{activeMembers.length.toString().padStart(2, '0')}</strong></div>
               </div>
               <section className="ledger-section issue-panel">
                 <div className="section-toolbar"><div className="section-title"><h2>Issue equipment</h2><span>NEW HANDOFF</span></div></div>
                 <form className="workspace-issue-form" onSubmit={handleWorkspaceCheckout}>
                   <label>Equipment<select name="gear" required defaultValue="" disabled={!availableGear.length}><option value="" disabled>Select available equipment</option>{availableGear.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.category}{item.cueUse !== 'Not applicable' ? ` · ${item.cueUse} cue` : ''}</option>)}</select></label>
-                  <label>Issue to<select name="member" required defaultValue="" disabled={!members.length}><option value="" disabled>Select a member</option>{members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
-                  <button className="primary-button" type="submit" disabled={!availableGear.length || !members.length}><ArrowUpDown size={16} /> Record issue</button>
+                  <label>Issue to<select name="member" required defaultValue="" disabled={!activeMembers.length}><option value="" disabled>Select a member</option>{activeMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
+                  <button className="primary-button" type="submit" disabled={!availableGear.length || !activeMembers.length}><ArrowUpDown size={16} /> Record issue</button>
                 </form>
               </section>
               <section className="ledger-section active-loans-panel">
-                <div className="section-toolbar"><div className="section-title"><h2>Active loans</h2><span>{loanedCount} ITEMS</span></div></div>
+                <div className="section-toolbar"><div className="section-title"><h2>Outstanding loans</h2><span>{loanedCount} ITEMS</span></div></div>
                 <div className="table-wrap"><table className="data-table active-loans-table"><thead><tr><th>EQUIPMENT</th><th>CUE USE</th><th>ISSUED TO</th><th>LAST UPDATED</th><th><span className="sr-only">Action</span></th></tr></thead><tbody>
                   {loanedGear.map((item) => {
                     const member = memberById.get(item.memberId ?? '')
-                    return <tr key={item.id}><td><div className="item-name"><span className={`item-symbol ${item.category.toLowerCase()}`}><Package size={16} /></span><span><strong>{item.name}</strong><small>{item.serial || item.category}</small></span></div></td><td><span className={`cue-use ${item.cueUse.toLowerCase()}`}>{item.cueUse === 'Not applicable' ? '—' : `${item.cueUse} cue`}</span></td><td>{member ? <div className="member-cell"><span className="mini-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span>{member.name}</span></div> : <span className="muted">Member not on roster</span>}</td><td className="date-cell">{formatDate(item.updatedAt)}</td><td><button className="text-action return-action" onClick={() => returnGear(item)}><ArrowDownToLine size={15} /> Return</button></td></tr>
+                    return <tr key={item.id}><td><EquipmentLabel item={item} member={item.memberId ? memberById.get(item.memberId) : undefined} /></td><td><span className={`cue-use ${item.cueUse.toLowerCase()}`}>{item.cueUse === 'Not applicable' ? '—' : `${item.cueUse} cue`}</span></td><td>{member ? <div className="member-cell"><span className="mini-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span>{member.name}</span></div> : <span className="muted">Member not on roster</span>}</td><td className="date-cell">{formatDate(item.updatedAt)}</td><td><button className="text-action return-action" onClick={() => returnGear(item)}><ArrowDownToLine size={15} /> Return</button></td></tr>
                   })}
                   {!loanedGear.length && <tr><td className="empty-row" colSpan={5}>No equipment is currently checked out.</td></tr>}
                 </tbody></table></div>
@@ -851,18 +858,13 @@ function App() {
           {view === 'members' && (
             <>
               {reviewingProfileDuplicates && !ownMember?.profile_completed_at && <div className="profile-reminder"><span>Merge the matching duplicates, then finish your contact details.</span><button className="secondary-button" onClick={() => { setReviewingProfileDuplicates(false); setProfileError('') }}>Finish profile</button></div>}
-              <section className="member-summary"><div><span className="stat-label">ACTIVE ROSTER</span><strong>{members.length.toString().padStart(2, '0')}</strong><span className="stat-foot">members on file</span></div><div><span className="stat-label">CURRENT LOANS</span><strong>{loanedCount.toString().padStart(2, '0')}</strong><span className="stat-foot">items assigned to members</span></div><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import CSV or Excel roster"><ArrowDownToLine size={15} /><input type="file" aria-label="Import CSV or Excel roster" disabled={isSyncing} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import CSV / Excel (.xlsx).'}</span></div></section>
-              <section className="ledger-section members-ledger"><div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
-                <div className="section-toolbar"><div className="section-title"><h2>Member directory</h2><span>{members.length} MEMBERS</span></div><label className="search-field"><Search size={16} /><input aria-label="Search members" placeholder="Search members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label></div>
-                <div className="table-wrap"><table className="data-table member-table"><thead><tr><th>MEMBER</th><th>UVA EMAIL</th><th>PHONE</th><th>CLASS YEAR</th><th>EQUIPMENT ON LOAN</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
-                  {visibleMembers.map((member) => {
-                    const assigned = gear.filter((item) => item.memberId === member.id)
-                    return <tr key={member.id}><td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><strong>{member.name}</strong></div></td><td><div className="contact-lines">{member.email ? <a href={`mailto:${member.email}`}><Mail size={14} />{member.email}</a> : <span className="muted">No email</span>}</div></td><td><div className="contact-lines">{member.phone ? <span><Phone size={14} />{formatUsPhone(member.phone)}</span> : <span className="muted">No phone</span>}</div></td><td>{member.year ? <span className="year-value">' {member.year.slice(-2)}</span> : <span className="muted">—</span>}</td><td>{assigned.length ? <div className="assigned-list">{assigned.map((item) => <span key={item.id}>{item.name}</span>)}</div> : <span className="muted">No equipment assigned</span>}</td><td><div className="member-actions"><button className="text-action" aria-label={`History for ${member.name}`} onClick={() => openHistory({ member: member.id })}><Clock3 size={14} /> History</button><button className="text-action edit-member-action" aria-label={`Edit ${member.name}`} onClick={() => setModal({ kind: 'edit-member', memberId: member.id })}><Pencil size={14} /> Edit</button><button className="text-action" aria-label={`Invite ${member.name}`} disabled={!member.email || Boolean(member.auth_user_id) || Boolean(invitingMemberId)} title={member.auth_user_id ? 'This member already has an account' : !member.email ? 'Add an email first' : 'Send an invitation granting executive access'} onClick={() => { void inviteMember(member) }}><Mail size={14} />{invitingMemberId === member.id ? 'Sending…' : member.auth_user_id ? 'Account linked' : 'Invite'}</button></div></td></tr>
-                  })}
-                  {visibleMembers.length === 0 && <tr><td className="empty-row" colSpan={6}>{members.length === 0 ? 'No members have been added yet.' : `No members match “${query}”.`}</td></tr>}
-                </tbody></table></div>
-                <div className="table-footer"><span>SHOWING <strong>{visibleMembers.length}</strong> OF <strong>{members.length}</strong> MEMBERS</span><span>Member contact information is kept with the roster.</span></div>
-              </section>
+              <section className="member-summary"><div><span className="stat-label">ACTIVE ROSTER</span><strong>{activeMembers.length.toString().padStart(2, '0')}</strong><span className="stat-foot">members on file</span></div><div><span className="stat-label">CURRENT LOANS</span><strong>{loanedCount.toString().padStart(2, '0')}</strong><span className="stat-foot">items assigned to members</span></div><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import CSV or Excel roster"><ArrowDownToLine size={15} /><input type="file" aria-label="Import CSV or Excel roster" disabled={isSyncing} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import CSV / Excel (.xlsx).'}</span></div></section>
+              <div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
+              <MemberDirectory title="Active member directory" members={visibleMembers.filter(isActiveMember)} total={activeMembers.length} gear={gear} invitingMemberId={invitingMemberId}
+                search={<label className="search-field"><Search size={16} /><input aria-label="Search active and emeritus members" placeholder="Search all members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label>}
+                onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
+              <MemberDirectory title="Emeritus" members={visibleMembers.filter((member) => member.is_emeritus)} total={emeritusMembers.length} gear={gear} invitingMemberId={invitingMemberId}
+                onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
             </>
           )}
 
@@ -909,18 +911,19 @@ function App() {
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit"><Plus size={16} /> Add item</button></div>
           </form>}
           {(modal.kind === 'member' || modal.kind === 'edit-member') && <form className="modal-form" onSubmit={(event) => handleMemberSubmit(event, modal.kind === 'edit-member' ? modal.memberId : undefined)}>
+            <label>Membership<select name="membership" defaultValue={modal.kind === 'edit-member' && members.find((member) => member.id === modal.memberId)?.is_emeritus ? 'emeritus' : 'active'}><option value="active">Active member</option><option value="emeritus">Emeritus</option></select></label>
             <label>Full name<input name="name" required placeholder="Member name" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.name ?? '' : ''} autoFocus /></label><label>UVA Email<input name="email" type="email" placeholder="name@virginia.edu" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.email ?? '' : ''} /></label><div className="form-grid"><label>Phone<PhoneInput key={modal.kind === 'edit-member' ? modal.memberId : 'new-member'} defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.phone ?? '' : ''} /></label><label>Class year<input name="year" inputMode="numeric" placeholder="2027" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.year ?? '' : ''} /></label></div>
             <div className="modal-actions">{modal.kind === 'edit-member' && <button type="button" className="secondary-button merge-launch" onClick={() => { setMergeTargetId(''); setMergeError(''); setModal({ kind: 'merge-member', memberId: modal.memberId }) }}>Merge duplicate</button>}<button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit">{modal.kind === 'edit-member' ? 'Save changes' : <><Plus size={16} /> Add member</>}</button></div>
           </form>}
           {modal.kind === 'merge-member' && <form className="modal-form" onSubmit={handleMerge}>
             <p className="modal-intro">Merge <strong>{members.find((member) => member.id === modal.memberId)?.name}</strong> into the record selected below. The selected record stays; this duplicate is removed. Equipment loans and the account link move to the selected member.</p>
             <label>Keep this member<select required value={mergeTargetId} disabled={isMerging} onChange={(event) => setMergeTargetId(event.target.value)}><option value="">Choose the member to keep</option>{members.filter((member) => member.id !== modal.memberId).map((member) => <option key={member.id} value={member.id}>{member.name} — {member.email || member.phone || 'No contact details'}</option>)}</select></label>
-            {mergeTargetId && <div className="merge-preview"><strong>{members.find((member) => member.id === mergeTargetId)?.name} will remain</strong><p>Existing contact details on this record are kept. Empty fields are filled from the duplicate. All loans are kept.</p></div>}
+            {mergeTargetId && <div className="merge-preview"><strong>{members.find((member) => member.id === mergeTargetId)?.name} will remain</strong><p>Existing contact details on this record are kept. Empty fields are filled from the duplicate. All loans are kept. If either record is emeritus, the merged member stays emeritus.</p></div>}
             {mergeError && <p className="gate-error" role="alert">{mergeError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" disabled={isMerging} onClick={() => setModal({ kind: 'edit-member', memberId: modal.memberId })}>Back</button><button className="primary-button" type="submit" disabled={isMerging || !mergeTargetId}>{isMerging ? 'Merging…' : 'Merge members'}</button></div>
           </form>}
           {modal.kind === 'checkout' && <form className="modal-form" onSubmit={(event) => handleCheckout(event, modal.gearId)}>
-            <p className="modal-intro">Select the member borrowing <strong>{gear.find((item) => item.id === modal.gearId)?.name}</strong>.</p><label>Issue to<select name="member" required defaultValue=""><option value="" disabled>Select a member</option>{members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
+            <p className="modal-intro">Select the member borrowing <strong>{gear.find((item) => item.id === modal.gearId)?.name}</strong>.</p><label>Issue to<select name="member" required defaultValue=""><option value="" disabled>Select a member</option>{activeMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit"><Check size={16} /> Record checkout</button></div>
           </form>}
         </section>

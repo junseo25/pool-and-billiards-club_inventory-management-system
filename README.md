@@ -8,6 +8,7 @@ A responsive inventory and checkout application for the University of Virginia P
 - **Cue identification:** Playing, break, and jump use is available for shafts and butts. Serial numbers use a type prefix and cue suffix, such as `SH-123-P` (playing shaft), `BU-123-B` (break butt), and `SH-123-J` (jump shaft). Cases and accessories use a type prefix only.
 - **Issue and return:** Record equipment checkouts and returns from the dedicated handoff workspace or the inventory list.
 - **Member directory:** Add and edit contact details and class year. Assigned equipment remains connected to the member record.
+- **Emeritus members:** Keep former members in a separate directory section. Their outstanding loans are marked overdue in red; active-member loans are green and reserve equipment is yellow-orange.
 - **Roster import:** Import a CSV or Excel (.xlsx) file or sync a link-accessible Google Sheet. Imports update matching members without removing members absent from the sheet.
 - **History:** Follow equipment and members across school years, with filters for member, item, equipment type, and serial number.
 - **Settings:** Select light or dark appearance, customize the club name, and define shared school years and start dates.
@@ -97,6 +98,14 @@ All approved executives share the same club records. RLS checks the signed-in us
 Auth sessions persist across browser sessions. Operational records and school-year periods live in Supabase, so approved users see the same data across devices. Appearance, club name, and the saved Sheet URL are client preferences and remain in that browser profile.
 
 ## Google Sheets
+
+### Emeritus members
+
+Run `supabase/migrations/20261001_emeritus_members.sql` after the school-year history migration before deploying this app version. Existing members start as active. Use **Add member** or **Edit → Membership** to choose **Active member** or **Emeritus**. Active and emeritus members have separate directory sections; the shared search applies to both. Emeritus records remain available in history and retain existing loans and login links.
+
+Outstanding equipment assigned to an emeritus member is red, with **Overdue — emeritus member** immediately under each item. Active-member loans are green. Equipment with no member assignment is **In reserve**, in yellow-orange. Returns remain available for overdue loans; new checkouts require an active member, enforced in the database as well as the UI. Restoring a member to active makes their outstanding loans green again.
+
+Roster imports preserve membership status. If either merged record is emeritus, the survivor stays emeritus until explicitly restored using Edit. New imported members default to active.
 
 ### UVA emails and school-year history
 
