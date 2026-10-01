@@ -46,6 +46,16 @@ The app intentionally has no self-service sign-up. Adding someone to Supabase Au
 
 ## Run locally
 
+## Invitation links
+
+In Supabase **Authentication → URL Configuration**, set **Site URL** to the app's address (for local development, `http://localhost:5173/`). Add that address to the allowed redirect URLs too. For GitHub Pages, use `https://junseo25.github.io/pool-and-billiards-club_inventory-management-system/` after deploying the updated app.
+
+Keep the Invite user email template's link pointed at `{{ .ConfirmationURL }}`. From **Authentication → Users**, invite the executive by email, then add their account to `executive_access` with the SQL above. Opening the invitation establishes a session and displays the password setup form before the inventory workspace. Password recovery links also display this form. If a custom redirect drops the invite fragment's `type`, use the app URL with `?setup=password` and allow that redirect URL in Supabase.
+
+Invitation sending happens through the Supabase dashboard; the browser app does not contain an admin key. Public sign-ups should stay disabled.
+
+## Local development
+
 **Requirements:** Node.js and npm.
 
 ```sh

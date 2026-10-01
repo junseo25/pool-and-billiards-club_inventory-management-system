@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
-import { isSupabaseConfigured, supabase } from './lib/supabase'
+import { authCallbackError, isPasswordSetupLink, isSupabaseConfigured, supabase } from './lib/supabase'
 import type { User } from '@supabase/supabase-js'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
@@ -140,7 +140,11 @@ function App() {
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured)
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
-  const [authError, setAuthError] = useState('')
+  const [authError, setAuthError] = useState(authCallbackError)
+  const [needsPasswordSetup, setNeedsPasswordSetup] = useState(isPasswordSetupLink)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [isSavingPassword, setIsSavingPassword] = useState(false)
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [workspaceAccess, setWorkspaceAccess] = useState<boolean | null>(null)
   const [workspaceLoadedFor, setWorkspaceLoadedFor] = useState<string | null>(null)
@@ -169,8 +173,9 @@ function App() {
     if (!supabase) return
 
     let active = true
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return
+      if (event === 'PASSWORD_RECOVERY') setNeedsPasswordSetup(true)
       setAuthUser(session?.user ?? null)
       setAuthReady(true)
     })
@@ -513,6 +518,32 @@ function App() {
     }
   }
 
+  async function handleSetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    setAuthError('')
+    if (newPassword !== confirmPassword) {
+      setAuthError('Passwords do not match.')
+      return
+    }
+    setIsSavingPassword(true)
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) throw error
+      setNeedsPasswordSetup(false)
+      setNewPassword('')
+      setConfirmPassword('')
+      const url = new URL(window.location.href)
+      url.searchParams.delete('setup')
+      url.hash = ''
+      window.history.replaceState(null, '', url)
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Could not save your password.')
+    } finally {
+      setIsSavingPassword(false)
+    }
+  }
+
   async function handleSignOut() {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
@@ -543,12 +574,25 @@ function App() {
     return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><form className="auth-panel" onSubmit={handleSignIn}>
       <span className="eyebrow">UNIVERSITY OF VIRGINIA · POOL CLUB</span>
       <h1>Executive sign in</h1>
-      <p>Sign in with an approved club executive account.</p>
+      <p>{needsPasswordSetup ? 'Open a valid invitation email link to set your password. If the link has expired or was already used, ask your administrator for a new invitation or password reset.' : 'Sign in with an approved club executive account.'}</p>
       <label>Email<input type="email" autoComplete="username" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
       <label>Password<input type="password" autoComplete="current-password" required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
       {authError && <p className="gate-error" role="alert">{authError}</p>}
       <button className="primary-button" type="submit" disabled={isSigningIn}>{isSigningIn ? 'Signing in…' : 'Sign in'}</button>
       <p className="auth-footnote">Accounts are invited and approved by a club administrator.</p>
+    </form></div>
+  }
+
+  if (needsPasswordSetup) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><form className="auth-panel" onSubmit={handleSetPassword}>
+      <span className="eyebrow">CLUB ACCOUNT</span>
+      <h1>Set your password</h1>
+      <p>Choose a password for {authUser.email} to finish setting up your account.</p>
+      <label>New password<input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+      <label>Confirm password<input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
+      {authError && <p className="gate-error" role="alert">{authError}</p>}
+      <button className="primary-button" type="submit" disabled={isSavingPassword}>{isSavingPassword ? 'Saving password…' : 'Save password and continue'}</button>
+      <button className="secondary-button" type="button" disabled={isSavingPassword} onClick={() => { void handleSignOut() }}>Sign out</button>
     </form></div>
   }
 
