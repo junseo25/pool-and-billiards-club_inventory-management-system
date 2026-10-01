@@ -27,6 +27,7 @@ import { rosterRows } from './lib/roster'
 import { easternDate, mapActivity, schoolYearForDate, type Activity, type SchoolYear } from './lib/history'
 import HistoryPanel, { type HistoryScope } from './components/HistoryPanel'
 import MemberDirectory from './components/MemberDirectory'
+import MemberProfile from './components/MemberProfile'
 import EquipmentLabel from './components/EquipmentLabel'
 import { isActiveMember } from './lib/membership'
 
@@ -56,7 +57,7 @@ type Member = {
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
-type Modal = { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
+type Modal = { kind: 'profile-member'; memberId: string } | { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
 type SortKey = 'name' | 'category' | 'cueUse' | 'member' | 'updatedAt'
 
 function readStore<T,>(key: string, fallback: T): T {
@@ -462,6 +463,7 @@ function App() {
   async function handleStartSchoolYear(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!supabase) return
+    if (!window.confirm(`Save school year ${newYearLabel.trim()} starting ${newYearStart}? The previous school year will end the day before this date. Activity on or after this date will be assigned to the new year.`)) return
     setYearError('')
     setIsSavingYear(true)
     try {
@@ -476,6 +478,26 @@ function App() {
       }
       setActivity(await fetchActivity())
     } catch (error) { setYearError(errorMessage(error, 'Could not save the school year.')) }
+    finally { setIsSavingYear(false) }
+  }
+
+  async function handleDeleteSchoolYear(year: SchoolYear, previous: SchoolYear) {
+    if (!supabase || isSavingYear) return
+    if (!window.confirm(`Delete school year ${year.label}? All its activity will move to ${previous.label}. No history or member/equipment information will be deleted.`)) return
+    setYearError('')
+    setIsSavingYear(true)
+    try {
+      const { data, error } = await supabase.rpc('delete_school_year', { year_id_to_delete: year.id })
+      if (error) throw error
+      const years = data as SchoolYear[]
+      setSchoolYears(years)
+      const latest = years.at(-1)
+      if (latest) {
+        const next = Number(latest.label.slice(0,4)) + 1
+        setNewYearLabel(`${next}/${String(next+1).slice(-2)}`)
+      }
+      setActivity(await fetchActivity())
+    } catch (error) { setYearError(errorMessage(error, 'Could not delete the school year.')) }
     finally { setIsSavingYear(false) }
   }
 
@@ -884,9 +906,9 @@ function App() {
               <div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
               <MemberDirectory title="Active member directory" members={visibleMembers.filter(isActiveMember)} total={activeMembers.length} gear={gear} invitingMemberId={invitingMemberId}
                 search={<label className="search-field"><Search size={16} /><input aria-label="Search active and emeritus members" placeholder="Search all members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label>}
-                onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
+                onProfile={(member) => setModal({ kind: 'profile-member', memberId: member.id })} onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
               <MemberDirectory title="Emeritus" members={visibleMembers.filter((member) => member.is_emeritus)} total={emeritusMembers.length} gear={gear} invitingMemberId={invitingMemberId}
-                onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
+                onProfile={(member) => setModal({ kind: 'profile-member', memberId: member.id })} onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
             </>
           )}
 
@@ -914,7 +936,7 @@ function App() {
                   {latestYear && <p className="school-year-note">Start after {latestYear.start_date}. Earlier activity stays in its original school year.</p>}
                   {yearError && <p className="gate-error" role="alert">{yearError}</p>}
                   <button type="submit" className="primary-button" disabled={isSavingYear}>{isSavingYear ? 'Saving school year…' : 'Save new school year'}</button>
-                  <ul className="school-year-list">{schoolYears.map((year,index) => <li key={year.id}><strong>{year.label}</strong><span>From {year.start_date}{schoolYears[index+1] ? ` · until ${schoolYears[index+1].start_date} (exclusive)` : ' · open until the next school year'}</span></li>)}</ul>
+                  <ul className="school-year-list">{schoolYears.map((year,index) => <li key={year.id}><div className="school-year-actions"><strong>{year.label}</strong><button type="button" className="text-action danger-text" disabled={isSavingYear || index === 0} title={index === 0 ? 'The first school year has no previous year to receive its history' : `Move history to ${schoolYears[index-1].label}`} onClick={() => { void handleDeleteSchoolYear(year, schoolYears[index-1]) }}>Delete</button></div><span>From {year.start_date}{schoolYears[index+1] ? ` · until ${schoolYears[index+1].start_date} (exclusive)` : ' · open until the next school year'}</span>{index === 0 && <span>The first school year cannot be deleted because it has no previous year.</span>}</li>)}</ul>
                 </div>
               </form>
             </section>
@@ -925,7 +947,8 @@ function App() {
 
       {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging && !isDeletingMember) setModal(null) }}>
         <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'profile-member' ? 'Member profile' : modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          {modal.kind === 'profile-member' && members.filter((member) => member.id === modal.memberId).map((member) => <MemberProfile key={member.id} member={member} gear={gear} onEdit={() => setModal({ kind: 'edit-member', memberId: member.id })} onHistory={() => { setModal(null); openHistory({ member: member.id }) }} />)}
           {modal.kind === 'gear' && <form className="modal-form" onSubmit={handleAddGear}>
             <label>Equipment name<input name="name" required placeholder="e.g. Predator soft case" autoFocus /></label>
               <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>

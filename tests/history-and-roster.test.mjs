@@ -84,8 +84,29 @@ test('school years, atomic handoffs, archived equipment and merged member histor
     await assert.rejects(db.query("select * from start_school_year('2028/29','2027-09-05')"), /start after/)
     await assert.rejects(db.query("select * from start_school_year('2028/30','2028-09-01')"), /consecutive/)
     assert.equal((await db.query('select * from school_years')).rows.length, 2)
+    await db.exec(await readFile(new URL('../supabase/migrations/20261001_delete_school_years.sql', import.meta.url), 'utf8'))
+    await db.query("select * from start_school_year('2028/29','2028-09-01')")
+    await db.exec("insert into activity_log(action,gear_name,member_name,created_at) values('Returned','Later','Alex','2028-10-01 12:00:00-04')")
+    const years = (await db.query('select * from school_years order by start_date')).rows
+    const beforeDelete = (await db.query('select * from activity_log order by id')).rows
+    await assert.rejects(db.query('select * from delete_school_year($1)', [years[0].id]), /first school year/)
+    await db.query('select * from delete_school_year($1)', [years[1].id])
+    const afterDelete = (await db.query('select * from activity_log order by id')).rows
+    assert.equal(afterDelete.length, beforeDelete.length)
+    for (let i = 0; i < beforeDelete.length; i++) {
+      const expected = beforeDelete[i].school_year_id === years[1].id
+        ? { ...beforeDelete[i], school_year_id: years[0].id, school_year: years[0].label }
+        : beforeDelete[i]
+      assert.deepEqual(afterDelete[i], expected, 'all snapshots remain unchanged except reassigned year')
+    }
+    await db.exec("insert into activity_log(action,gear_name,member_name,created_at) values('Returned','Gap','Alex','2027-10-01 12:00:00-04')")
+    assert.equal((await db.query("select school_year from activity_log where gear_name='Gap'")).rows[0].school_year, '2026/27')
+    await db.query('select * from delete_school_year($1)', [years[2].id])
+    assert.equal((await db.query("select school_year from activity_log where gear_name='Later'")).rows[0].school_year, '2026/27')
+    assert.equal((await db.query('select * from school_years')).rows.length, 1)
     await db.exec("set app.test_user='00000000-0000-0000-0000-000000000099'")
     await assert.rejects(db.query("select * from start_school_year('2028/29','2028-09-01')"), /Executive access required/)
+    await assert.rejects(db.query('select * from delete_school_year($1)', [years[0].id]), /Executive access required/)
     await assert.rejects(db.query("select * from record_equipment_handoff($1,'Removed')", [item]), /Executive access required/)
   } finally { await db.close() }
 })

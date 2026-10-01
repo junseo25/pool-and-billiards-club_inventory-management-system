@@ -115,6 +115,8 @@ Roster imports preserve membership status. If either merged record is emeritus, 
 
 ### UVA emails and school-year history
 
+Run `supabase/migrations/20261001_delete_school_years.sql` to enable school-year deletion in Settings. Saving and deleting school years both require confirmation. Deletion moves every activity entry to the immediately previous year without deleting history or member/equipment records. The previous year's period extends until the next remaining year's start. The first year cannot be deleted because it has no predecessor.
+
 Apply `supabase/migrations/20261001_school_year_history.sql` after the earlier migrations before deploying this app version. It initializes **2026/27** with the club's chosen start date, **2026-08-25**.
 
 Every imported roster row is scanned for an `@virginia.edu` address, even when it appears in Notes, another contact field, or an Excel hyperlink. A dedicated **UVA Email** column takes priority. An ambiguous row with multiple UVA addresses stops the import so the wrong email is not assigned. Name-plus-phone matching can update an existing member's email rather than create another member. Members display a **UVA Email** column.
