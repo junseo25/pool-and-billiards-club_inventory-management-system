@@ -1,0 +1,4 @@
+[functions.invite-member]
+# The handler validates the token with Auth and checks executive_access itself.
+# This supports both legacy and asymmetric signing keys.
+verify_jwt = false

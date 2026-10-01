@@ -25,6 +25,8 @@ import {
 import './App.css'
 import { authCallbackError, isPasswordSetupLink, isSupabaseConfigured, supabase } from './lib/supabase'
 import type { User } from '@supabase/supabase-js'
+import PhoneInput from './components/PhoneInput'
+import { formatUsPhone } from './lib/phone'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
 type CueUse = 'Playing' | 'Break' | 'Jump' | 'Not applicable'
@@ -45,6 +47,9 @@ type Member = {
   email: string
   phone: string
   year: string
+  auth_user_id?: string | null
+  profile_completed_at?: string | null
+  invitation_sent_at?: string | null
 }
 
 type Activity = {
@@ -56,7 +61,7 @@ type Activity = {
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
-type Modal = { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
+type Modal = { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
 type SortKey = 'name' | 'category' | 'cueUse' | 'member' | 'updatedAt'
 
 function readStore<T,>(key: string, fallback: T): T {
@@ -66,10 +71,6 @@ function readStore<T,>(key: string, fallback: T): T {
   } catch {
     return fallback
   }
-}
-
-function makeId() {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function serialPrefix(category: GearCategory) {
@@ -91,6 +92,11 @@ function addCueUseSuffix(serial: string, cueUse: CueUse) {
 
 function formatDate(date: string) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(date))
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+    ? error.message : fallback
 }
 
 function parseCsv(text: string) {
@@ -145,6 +151,16 @@ function App() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isSavingPassword, setIsSavingPassword] = useState(false)
+  const [profileName, setProfileName] = useState('')
+  const [profilePhone, setProfilePhone] = useState('')
+  const [profileError, setProfileError] = useState('')
+  const [isSavingProfile, setIsSavingProfile] = useState(false)
+  const [reviewingProfileDuplicates, setReviewingProfileDuplicates] = useState(false)
+  const [invitingMemberId, setInvitingMemberId] = useState<string | null>(null)
+  const [invitationMessage, setInvitationMessage] = useState('')
+  const [mergeTargetId, setMergeTargetId] = useState('')
+  const [mergeError, setMergeError] = useState('')
+  const [isMerging, setIsMerging] = useState(false)
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [workspaceAccess, setWorkspaceAccess] = useState<boolean | null>(null)
   const [workspaceLoadedFor, setWorkspaceLoadedFor] = useState<string | null>(null)
@@ -241,7 +257,13 @@ function App() {
           email: row.email,
           phone: row.phone,
           year: row.year,
+          auth_user_id: row.auth_user_id,
+          profile_completed_at: row.profile_completed_at,
+          invitation_sent_at: row.invitation_sent_at,
         })))
+        const ownMember = membersResult.data?.find((row) => row.auth_user_id === userId)
+        setProfileName(ownMember?.name ?? '')
+        setProfilePhone(ownMember?.phone ?? '')
         setActivity((activityResult.data ?? []).map((row) => ({
           id: row.id,
           action: row.action,
@@ -351,7 +373,7 @@ function App() {
       setDataError(error?.message ?? 'Could not save the member record.')
       return
     }
-    const updatedMember: Member = { id: data.id, name: data.name, email: data.email, phone: data.phone, year: data.year }
+    const updatedMember: Member = data
     setMembers((people) => memberId
       ? people.map((member) => member.id === memberId ? updatedMember : member)
       : [...people, updatedMember])
@@ -427,9 +449,9 @@ function App() {
     setSettingsSaved(true)
   }
 
-  async function importMembers(csvText: string) {
+  async function importMembers(source: string | string[][]) {
     if (!supabase) throw new Error('The secure database is not configured.')
-    const rows = parseCsv(csvText)
+    const rows = typeof source === 'string' ? parseCsv(source) : source
     if (rows.length < 2) throw new Error('The sheet is empty or has no member rows.')
     const headers = rows[0].map((header) => header.toLowerCase().replace(/[_-]/g, ' ').trim())
     const column = (...names: string[]) => headers.findIndex((header) => names.includes(header))
@@ -445,29 +467,18 @@ function App() {
       const name = nameColumn >= 0 ? values[nameColumn] ?? '' : `${values[firstNameColumn] ?? ''} ${lastNameColumn >= 0 ? values[lastNameColumn] ?? '' : ''}`.trim()
       if (!name) return []
       const email = emailColumn >= 0 ? values[emailColumn] ?? '' : ''
-      const previous = members.find((member) => (email && member.email.toLowerCase() === email.toLowerCase()) || member.name.toLowerCase() === name.toLowerCase())
       return [{
-        id: previous?.id ?? makeId(),
         name,
-        email: emailColumn >= 0 ? email : previous?.email ?? '',
-        phone: phoneColumn >= 0 ? values[phoneColumn] ?? '' : previous?.phone ?? '',
-        year: yearColumn >= 0 ? values[yearColumn] ?? '' : previous?.year ?? '',
+        email,
+        phone: phoneColumn >= 0 ? values[phoneColumn] ?? '' : '',
+        year: yearColumn >= 0 ? values[yearColumn] ?? '' : '',
       }]
     })
     if (imported.length === 0) throw new Error('No members with names were found in the sheet.')
-    const { error } = await supabase.from('members').upsert(imported.map((member) => ({
-      id: member.id,
-      name: member.name,
-      email: member.email,
-      phone: member.phone,
-      year: member.year,
-    })), { onConflict: 'id' })
+    const { data, error } = await supabase.rpc('sync_member_roster', { roster: imported })
     if (error) throw error
-    setMembers((existing) => {
-      const updatedById = new Map(imported.map((member) => [member.id, member]))
-      return [...existing.map((member) => updatedById.get(member.id) ?? member), ...imported.filter((member) => !existing.some((current) => current.id === member.id))]
-    })
-    setSyncMessage(`${imported.length} member${imported.length === 1 ? '' : 's'} synced.`)
+    setMembers(data as Member[])
+    setSyncMessage(`${imported.length} roster row${imported.length === 1 ? '' : 's'} synced. Matching members updated.`)
   }
 
   async function syncSheet() {
@@ -493,12 +504,31 @@ function App() {
   }
 
   async function importCsvFile(file?: File) {
-    if (!file) return
+    if (!file || isSyncing) return
     setSyncMessage('')
+    setIsSyncing(true)
     try {
-      await importMembers(await file.text())
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        const { default: ExcelJS } = await import('exceljs')
+        const workbook = new ExcelJS.Workbook()
+        await workbook.xlsx.load(await file.arrayBuffer())
+        const sheet = workbook.worksheets.find((worksheet) => worksheet.state === 'visible' && worksheet.actualRowCount > 0)
+        if (!sheet) throw new Error('This workbook has no visible roster sheet.')
+        const rows: string[][] = []
+        sheet.eachRow((row) => {
+          const values = Array.from({ length: sheet.columnCount }, (_, index) => row.getCell(index + 1).text.trim())
+          if (values.some(Boolean)) rows.push(values)
+        })
+        await importMembers(rows)
+      } else if (file.name.toLowerCase().endsWith('.csv')) {
+        await importMembers(await file.text())
+      } else {
+        throw new Error('Choose a CSV or .xlsx file. Save older .xls workbooks as .xlsx first.')
+      }
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Could not read this CSV file.')
+      setSyncMessage(error instanceof Error ? error.message : 'Could not read this roster file.')
+    } finally {
+      setIsSyncing(false)
     }
   }
 
@@ -542,6 +572,64 @@ function App() {
     } finally {
       setIsSavingPassword(false)
     }
+  }
+
+  async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    const form = new FormData(event.currentTarget)
+    setProfileError('')
+    setIsSavingProfile(true)
+    try {
+      const { error } = await supabase.rpc('complete_executive_profile', {
+        full_name: String(form.get('fullName')).trim(), phone_number: String(form.get('phone')),
+      })
+      if (error) throw error
+      setWorkspaceLoadedFor(null)
+      setReviewingProfileDuplicates(false)
+      setWorkspaceRetry((retry) => retry + 1)
+    } catch (error) {
+      setProfileError(errorMessage(error, 'Could not save your profile.'))
+    } finally { setIsSavingProfile(false) }
+  }
+
+  async function inviteMember(member: Member) {
+    if (!supabase || invitingMemberId) return
+    setInvitingMemberId(member.id)
+    setInvitationMessage('')
+    try {
+      const { data, error } = await supabase.functions.invoke('invite-member', { body: { memberId: member.id } })
+      if (error) {
+        const context = 'context' in error ? error.context : null
+        if (context instanceof Response) {
+          const body = await context.json().catch(() => null)
+          if (body?.error) throw new Error(body.error)
+        }
+        throw error
+      }
+      if (data?.error) throw new Error(data.error)
+      setInvitationMessage(data?.message ?? `Invitation sent to ${member.email}.`)
+      setWorkspaceRetry((retry) => retry + 1)
+    } catch (error) {
+      setInvitationMessage(errorMessage(error, 'Could not send the invitation.'))
+    } finally { setInvitingMemberId(null) }
+  }
+
+  async function handleMerge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || modal?.kind !== 'merge-member' || !mergeTargetId) return
+    const sourceId = modal.memberId
+    setMergeError('')
+    setIsMerging(true)
+    try {
+      const { data, error } = await supabase.rpc('merge_members', { duplicate_id: sourceId, keep_id: mergeTargetId })
+      if (error) throw error
+      setMembers(data as Member[])
+      setGear((items) => items.map((item) => item.memberId === sourceId ? { ...item, memberId: mergeTargetId } : item))
+      setModal(null)
+    } catch (error) {
+      setMergeError(errorMessage(error, 'Could not merge these members.'))
+    } finally { setIsMerging(false) }
   }
 
   async function handleSignOut() {
@@ -602,6 +690,20 @@ function App() {
 
   if (workspaceError || !workspaceAccess) {
     return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><section className="auth-panel"><span className="eyebrow">SECURE WORKSPACE</span><h1>{workspaceError ? 'Could not load club data' : 'Access not approved'}</h1><p>{workspaceError || 'Your account is not on the club executive access list. Contact a database administrator.'}</p><div className="gate-actions">{workspaceError && <button className="primary-button" onClick={() => { setWorkspaceError(''); setWorkspaceRetry((retry) => retry + 1) }}>Try again</button>}<button className="secondary-button" onClick={() => { void handleSignOut() }}>Sign out</button></div></section></div>
+  }
+
+  const ownMember = members.find((member) => member.auth_user_id === authUser.id)
+  if (!ownMember?.profile_completed_at && (!reviewingProfileDuplicates || view !== 'members')) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><form className="auth-panel" onSubmit={handleProfileSubmit}>
+      <span className="eyebrow">EXECUTIVE PROFILE</span><h1>Your contact details</h1>
+      <p>Add your name and U.S. phone number once so we can connect your account to any existing roster entry.</p>
+      <label>Full name<input name="fullName" autoComplete="name" required value={profileName} onChange={(event) => setProfileName(event.target.value)} /></label>
+      <label>Phone<PhoneInput key={`${authUser.id}:${profilePhone}`} defaultValue={profilePhone} required /></label>
+      {profileError && <p className="gate-error" role="alert">{profileError}</p>}
+      {profileError && <button className="secondary-button" type="button" disabled={isSavingProfile} onClick={() => { setView('members'); setReviewingProfileDuplicates(true) }}>Review duplicate members</button>}
+      <button className="primary-button" type="submit" disabled={isSavingProfile}>{isSavingProfile ? 'Saving details…' : 'Save details and continue'}</button>
+      <button className="secondary-button" type="button" disabled={isSavingProfile} onClick={() => { void handleSignOut() }}>Sign out</button>
+    </form></div>
   }
 
   return (
@@ -736,15 +838,16 @@ function App() {
 
           {view === 'members' && (
             <>
-              <section className="member-summary"><div><span className="stat-label">ACTIVE ROSTER</span><strong>{members.length.toString().padStart(2, '0')}</strong><span className="stat-foot">members on file</span></div><div><span className="stat-label">CURRENT LOANS</span><strong>{loanedCount.toString().padStart(2, '0')}</strong><span className="stat-foot">items assigned to members</span></div><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import a CSV file"><ArrowDownToLine size={15} /><input type="file" accept=".csv,text/csv" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import a CSV.'}</span></div></section>
-              <section className="ledger-section members-ledger">
+              {reviewingProfileDuplicates && !ownMember?.profile_completed_at && <div className="profile-reminder"><span>Merge the matching duplicates, then finish your contact details.</span><button className="secondary-button" onClick={() => { setReviewingProfileDuplicates(false); setProfileError('') }}>Finish profile</button></div>}
+              <section className="member-summary"><div><span className="stat-label">ACTIVE ROSTER</span><strong>{members.length.toString().padStart(2, '0')}</strong><span className="stat-foot">members on file</span></div><div><span className="stat-label">CURRENT LOANS</span><strong>{loanedCount.toString().padStart(2, '0')}</strong><span className="stat-foot">items assigned to members</span></div><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import CSV or Excel roster"><ArrowDownToLine size={15} /><input type="file" aria-label="Import CSV or Excel roster" disabled={isSyncing} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import CSV / Excel (.xlsx).'}</span></div></section>
+              <section className="ledger-section members-ledger"><div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
                 <div className="section-toolbar"><div className="section-title"><h2>Member directory</h2><span>{members.length} MEMBERS</span></div><label className="search-field"><Search size={16} /><input aria-label="Search members" placeholder="Search members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label></div>
-                <div className="table-wrap"><table className="data-table member-table"><thead><tr><th>MEMBER</th><th>CONTACT</th><th>CLASS YEAR</th><th>EQUIPMENT ON LOAN</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
+                <div className="table-wrap"><table className="data-table member-table"><thead><tr><th>MEMBER</th><th>EMAIL</th><th>PHONE</th><th>CLASS YEAR</th><th>EQUIPMENT ON LOAN</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
                   {visibleMembers.map((member) => {
                     const assigned = gear.filter((item) => item.memberId === member.id)
-                    return <tr key={member.id}><td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><strong>{member.name}</strong></div></td><td><div className="contact-lines">{member.email && <span><Mail size={14} />{member.email}</span>}{member.phone && <span><Phone size={14} />{member.phone}</span>}{!member.email && !member.phone && <span className="muted">No contact details</span>}</div></td><td>{member.year ? <span className="year-value">' {member.year.slice(-2)}</span> : <span className="muted">—</span>}</td><td>{assigned.length ? <div className="assigned-list">{assigned.map((item) => <span key={item.id}>{item.name}</span>)}</div> : <span className="muted">No equipment assigned</span>}</td><td><button className="text-action edit-member-action" aria-label={`Edit ${member.name}`} onClick={() => setModal({ kind: 'edit-member', memberId: member.id })}><Pencil size={14} /> Edit</button></td></tr>
+                    return <tr key={member.id}><td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><strong>{member.name}</strong></div></td><td><div className="contact-lines">{member.email ? <a href={`mailto:${member.email}`}><Mail size={14} />{member.email}</a> : <span className="muted">No email</span>}</div></td><td><div className="contact-lines">{member.phone ? <span><Phone size={14} />{formatUsPhone(member.phone)}</span> : <span className="muted">No phone</span>}</div></td><td>{member.year ? <span className="year-value">' {member.year.slice(-2)}</span> : <span className="muted">—</span>}</td><td>{assigned.length ? <div className="assigned-list">{assigned.map((item) => <span key={item.id}>{item.name}</span>)}</div> : <span className="muted">No equipment assigned</span>}</td><td><div className="member-actions"><button className="text-action edit-member-action" aria-label={`Edit ${member.name}`} onClick={() => setModal({ kind: 'edit-member', memberId: member.id })}><Pencil size={14} /> Edit</button><button className="text-action" aria-label={`Invite ${member.name}`} disabled={!member.email || Boolean(member.auth_user_id) || Boolean(invitingMemberId)} title={member.auth_user_id ? 'This member already has an account' : !member.email ? 'Add an email first' : 'Send an invitation granting executive access'} onClick={() => { void inviteMember(member) }}><Mail size={14} />{invitingMemberId === member.id ? 'Sending…' : member.auth_user_id ? 'Account linked' : 'Invite'}</button></div></td></tr>
                   })}
-                  {visibleMembers.length === 0 && <tr><td className="empty-row" colSpan={5}>{members.length === 0 ? 'No members have been added yet.' : `No members match “${query}”.`}</td></tr>}
+                  {visibleMembers.length === 0 && <tr><td className="empty-row" colSpan={6}>{members.length === 0 ? 'No members have been added yet.' : `No members match “${query}”.`}</td></tr>}
                 </tbody></table></div>
                 <div className="table-footer"><span>SHOWING <strong>{visibleMembers.length}</strong> OF <strong>{members.length}</strong> MEMBERS</span><span>Member contact information is kept with the roster.</span></div>
               </section>
@@ -781,9 +884,9 @@ function App() {
         </div>
       </main>
 
-      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null) }}>
+      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging) setModal(null) }}>
         <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
           {modal.kind === 'gear' && <form className="modal-form" onSubmit={handleAddGear}>
             <label>Equipment name<input name="name" required placeholder="e.g. Predator soft case" autoFocus /></label>
               <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
@@ -791,8 +894,15 @@ function App() {
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit"><Plus size={16} /> Add item</button></div>
           </form>}
           {(modal.kind === 'member' || modal.kind === 'edit-member') && <form className="modal-form" onSubmit={(event) => handleMemberSubmit(event, modal.kind === 'edit-member' ? modal.memberId : undefined)}>
-            <label>Full name<input name="name" required placeholder="Member name" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.name ?? '' : ''} autoFocus /></label><label>Email<input name="email" type="email" placeholder="name@virginia.edu" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.email ?? '' : ''} /></label><div className="form-grid"><label>Phone<input name="phone" type="tel" placeholder="(434) 555-0123" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.phone ?? '' : ''} /></label><label>Class year<input name="year" inputMode="numeric" placeholder="2027" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.year ?? '' : ''} /></label></div>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit">{modal.kind === 'edit-member' ? 'Save changes' : <><Plus size={16} /> Add member</>}</button></div>
+            <label>Full name<input name="name" required placeholder="Member name" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.name ?? '' : ''} autoFocus /></label><label>Email<input name="email" type="email" placeholder="name@virginia.edu" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.email ?? '' : ''} /></label><div className="form-grid"><label>Phone<PhoneInput key={modal.kind === 'edit-member' ? modal.memberId : 'new-member'} defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.phone ?? '' : ''} /></label><label>Class year<input name="year" inputMode="numeric" placeholder="2027" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.year ?? '' : ''} /></label></div>
+            <div className="modal-actions">{modal.kind === 'edit-member' && <button type="button" className="secondary-button merge-launch" onClick={() => { setMergeTargetId(''); setMergeError(''); setModal({ kind: 'merge-member', memberId: modal.memberId }) }}>Merge duplicate</button>}<button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit">{modal.kind === 'edit-member' ? 'Save changes' : <><Plus size={16} /> Add member</>}</button></div>
+          </form>}
+          {modal.kind === 'merge-member' && <form className="modal-form" onSubmit={handleMerge}>
+            <p className="modal-intro">Merge <strong>{members.find((member) => member.id === modal.memberId)?.name}</strong> into the record selected below. The selected record stays; this duplicate is removed. Equipment loans and the account link move to the selected member.</p>
+            <label>Keep this member<select required value={mergeTargetId} disabled={isMerging} onChange={(event) => setMergeTargetId(event.target.value)}><option value="">Choose the member to keep</option>{members.filter((member) => member.id !== modal.memberId).map((member) => <option key={member.id} value={member.id}>{member.name} — {member.email || member.phone || 'No contact details'}</option>)}</select></label>
+            {mergeTargetId && <div className="merge-preview"><strong>{members.find((member) => member.id === mergeTargetId)?.name} will remain</strong><p>Existing contact details on this record are kept. Empty fields are filled from the duplicate. All loans are kept.</p></div>}
+            {mergeError && <p className="gate-error" role="alert">{mergeError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={isMerging} onClick={() => setModal({ kind: 'edit-member', memberId: modal.memberId })}>Back</button><button className="primary-button" type="submit" disabled={isMerging || !mergeTargetId}>{isMerging ? 'Merging…' : 'Merge members'}</button></div>
           </form>}
           {modal.kind === 'checkout' && <form className="modal-form" onSubmit={(event) => handleCheckout(event, modal.gearId)}>
             <p className="modal-intro">Select the member borrowing <strong>{gear.find((item) => item.id === modal.gearId)?.name}</strong>.</p><label>Issue to<select name="member" required defaultValue=""><option value="" disabled>Select a member</option>{members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
