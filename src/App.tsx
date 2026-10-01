@@ -6,6 +6,7 @@ import {
   Boxes,
   Check,
   Clock3,
+  LogOut,
   Mail,
   Moon,
   Package,
@@ -22,6 +23,8 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
+import { isSupabaseConfigured, supabase } from './lib/supabase'
+import type { User } from '@supabase/supabase-js'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
 type CueUse = 'Playing' | 'Break' | 'Jump' | 'Not applicable'
@@ -67,13 +70,6 @@ function readStore<T,>(key: string, fallback: T): T {
 
 function makeId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function inferCueUse(item: Pick<Gear, 'category' | 'name'>): CueUse {
-  if (item.category !== 'Shaft' && item.category !== 'Butt') return 'Not applicable'
-  if (/\bjump\b/i.test(item.name)) return 'Jump'
-  if (/\bbreak\b/i.test(item.name)) return 'Break'
-  return 'Playing'
 }
 
 function serialPrefix(category: GearCategory) {
@@ -137,13 +133,20 @@ function sheetCsvUrl(rawUrl: string) {
 }
 
 function App() {
-  const [gear, setGear] = useState<Gear[]>(() => readStore<Gear[]>('pool-club-gear', []).map(({ id, name, category, cueUse, serial, memberId, updatedAt }) => {
-    const resolvedCueUse = cueUse ?? inferCueUse({ category, name })
-    const isCue = category === 'Butt' || category === 'Shaft'
-    return { id, name, category, cueUse: resolvedCueUse, serial: isCue ? addCueUseSuffix(serial, resolvedCueUse) : serial, memberId, updatedAt }
-  }))
-  const [members, setMembers] = useState<Member[]>(() => readStore('pool-club-members', []))
-  const [activity, setActivity] = useState<Activity[]>(() => readStore('pool-club-activity', []))
+  const [gear, setGear] = useState<Gear[]>([])
+  const [members, setMembers] = useState<Member[]>([])
+  const [activity, setActivity] = useState<Activity[]>([])
+  const [authUser, setAuthUser] = useState<User | null>(null)
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured)
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [isSigningIn, setIsSigningIn] = useState(false)
+  const [workspaceAccess, setWorkspaceAccess] = useState<boolean | null>(null)
+  const [workspaceLoadedFor, setWorkspaceLoadedFor] = useState<string | null>(null)
+  const [workspaceRetry, setWorkspaceRetry] = useState(0)
+  const [workspaceError, setWorkspaceError] = useState('')
+  const [dataError, setDataError] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => readStore('pool-club-theme', 'light'))
   const [clubName, setClubName] = useState(() => readStore('pool-club-name', 'Break Pool Club'))
   const [season, setSeason] = useState(() => readStore('pool-club-season', '2026–27 season'))
@@ -158,11 +161,105 @@ function App() {
   const [sheetUrl, setSheetUrl] = useState(() => readStore('pool-club-sheet-url', ''))
   const [syncMessage, setSyncMessage] = useState('')
   const [isSyncing, setIsSyncing] = useState(false)
+  const currentUserId = authUser?.id ?? null
 
-  useEffect(() => localStorage.setItem('pool-club-gear', JSON.stringify(gear)), [gear])
-  useEffect(() => localStorage.setItem('pool-club-members', JSON.stringify(members)), [members])
-  useEffect(() => localStorage.setItem('pool-club-activity', JSON.stringify(activity)), [activity])
   useEffect(() => localStorage.setItem('pool-club-sheet-url', JSON.stringify(sheetUrl)), [sheetUrl])
+
+  useEffect(() => {
+    if (!supabase) return
+
+    let active = true
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return
+      setAuthUser(session?.user ?? null)
+      setAuthReady(true)
+    })
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return
+      if (error) setAuthError(error.message)
+      setAuthUser(data.session?.user ?? null)
+      setAuthReady(true)
+    })
+
+    return () => {
+      active = false
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!supabase || !currentUserId) return
+
+    let active = true
+    const client = supabase
+    const userId = currentUserId
+
+    async function loadWorkspace() {
+      try {
+        const { data: accessRow, error: accessError } = await client
+          .from('executive_access')
+          .select('user_id')
+          .eq('user_id', userId)
+          .maybeSingle()
+        if (accessError) throw accessError
+        if (!accessRow) {
+          if (active) {
+            setWorkspaceAccess(false)
+            setWorkspaceLoadedFor(userId)
+          }
+          return
+        }
+
+        const [equipmentResult, membersResult, activityResult] = await Promise.all([
+          client.from('equipment').select('*').order('name'),
+          client.from('members').select('*').order('name'),
+          client.from('activity_log').select('*').order('created_at', { ascending: false }),
+        ])
+        if (equipmentResult.error) throw equipmentResult.error
+        if (membersResult.error) throw membersResult.error
+        if (activityResult.error) throw activityResult.error
+        if (!active) return
+
+        setGear((equipmentResult.data ?? []).map((row) => ({
+          id: row.id,
+          name: row.name,
+          category: row.category as GearCategory,
+          cueUse: row.cue_use as CueUse,
+          serial: row.serial,
+          memberId: row.member_id,
+          updatedAt: row.updated_at,
+        })))
+        setMembers((membersResult.data ?? []).map((row) => ({
+          id: row.id,
+          name: row.name,
+          email: row.email,
+          phone: row.phone,
+          year: row.year,
+        })))
+        setActivity((activityResult.data ?? []).map((row) => ({
+          id: row.id,
+          action: row.action,
+          gearName: row.gear_name,
+          memberName: row.member_name,
+          date: row.created_at,
+        })))
+        setDataError('')
+        setWorkspaceAccess(true)
+        setWorkspaceLoadedFor(userId)
+        setWorkspaceError('')
+      } catch (error) {
+        if (active) {
+          const message = error instanceof Error ? error.message : 'Could not load the secure workspace.'
+          setWorkspaceError(message)
+          setDataError(message)
+        }
+      }
+    }
+
+    void loadWorkspace()
+    return () => { active = false }
+  }, [currentUserId, workspaceRetry])
 
   const memberById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members])
   const availableGear = gear.filter((item) => !item.memberId)
@@ -193,77 +290,125 @@ function App() {
     [member.name, member.email, member.phone, member.year].some((value) => value.toLowerCase().includes(query.toLowerCase().trim())),
   ), [members, query])
 
-  function logActivity(action: string, item: Gear, memberName: string) {
-    setActivity((entries) => [{ id: makeId(), action, gearName: item.name, memberName, date: new Date().toISOString() }, ...entries])
+  async function logActivity(action: string, item: Gear, memberName: string) {
+    if (!supabase) return
+    const { data, error } = await supabase.from('activity_log').insert({
+      action,
+      gear_name: item.name,
+      member_name: memberName,
+    }).select().single()
+    if (error || !data) {
+      setDataError(error?.message ?? 'Could not save the activity record.')
+      return
+    }
+    setActivity((entries) => [{ id: data.id, action: data.action, gearName: data.gear_name, memberName: data.member_name, date: data.created_at }, ...entries])
   }
 
-  function handleAddGear(event: FormEvent<HTMLFormElement>) {
+  async function handleAddGear(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!supabase) return
     const form = new FormData(event.currentTarget)
     const category = form.get('category') as GearCategory
     const cueUse = category === 'Butt' || category === 'Shaft' ? form.get('cueUse') as CueUse : 'Not applicable'
-    const item: Gear = {
-      id: makeId(),
+    const updatedAt = new Date().toISOString()
+    const { data, error } = await supabase.from('equipment').insert({
       name: String(form.get('name')).trim(),
       category,
       serial: serialDigits ? addCueUseSuffix(`${serialPrefix(category)}-${serialDigits}`, cueUse) : '',
-      cueUse,
-      memberId: null,
-      updatedAt: new Date().toISOString(),
+      cue_use: cueUse,
+      member_id: null,
+      updated_at: updatedAt,
+    }).select().single()
+    if (error || !data) {
+      setDataError(error?.message ?? 'Could not save the equipment item.')
+      return
     }
+    const item: Gear = { id: data.id, name: data.name, category: data.category as GearCategory, cueUse: data.cue_use as CueUse, serial: data.serial, memberId: data.member_id, updatedAt: data.updated_at }
     setGear((items) => [item, ...items])
+    setDataError('')
     setModal(null)
   }
 
-  function handleMemberSubmit(event: FormEvent<HTMLFormElement>, memberId?: string) {
+  async function handleMemberSubmit(event: FormEvent<HTMLFormElement>, memberId?: string) {
     event.preventDefault()
+    if (!supabase) return
     const form = new FormData(event.currentTarget)
-    const updatedMember = {
-      id: memberId ?? makeId(),
+    const memberData = {
       name: String(form.get('name')).trim(),
       email: String(form.get('email')).trim(),
       phone: String(form.get('phone')).trim(),
       year: String(form.get('year')).trim(),
     }
+    const { data, error } = memberId
+      ? await supabase.from('members').update(memberData).eq('id', memberId).select().single()
+      : await supabase.from('members').insert(memberData).select().single()
+    if (error || !data) {
+      setDataError(error?.message ?? 'Could not save the member record.')
+      return
+    }
+    const updatedMember: Member = { id: data.id, name: data.name, email: data.email, phone: data.phone, year: data.year }
     setMembers((people) => memberId
       ? people.map((member) => member.id === memberId ? updatedMember : member)
       : [...people, updatedMember])
+    setDataError('')
     setModal(null)
   }
 
-  function handleCheckout(event: FormEvent<HTMLFormElement>, gearId: string) {
+  async function handleCheckout(event: FormEvent<HTMLFormElement>, gearId: string) {
     event.preventDefault()
     const memberId = String(new FormData(event.currentTarget).get('member'))
-    checkoutGear(gearId, memberId)
-    setModal(null)
+    if (await checkoutGear(gearId, memberId)) setModal(null)
   }
 
-  function checkoutGear(gearId: string, memberId: string) {
+  async function checkoutGear(gearId: string, memberId: string) {
+    if (!supabase) return false
     const item = gear.find((entry) => entry.id === gearId)
-    if (!item || item.memberId) return
+    if (!item || item.memberId) return false
     const member = memberById.get(memberId)
-    if (!member) return
+    if (!member) return false
+    const updatedAt = new Date().toISOString()
+    const { error } = await supabase.from('equipment').update({ member_id: memberId, updated_at: updatedAt }).eq('id', gearId)
+    if (error) {
+      setDataError(error.message)
+      return false
+    }
     setGear((items) => items.map((entry) => entry.id === gearId ? { ...entry, memberId, updatedAt: new Date().toISOString() } : entry))
-    logActivity('Checked out', item, member.name)
+    setDataError('')
+    await logActivity('Checked out', item, member.name)
+    return true
   }
 
-  function handleWorkspaceCheckout(event: FormEvent<HTMLFormElement>) {
+  async function handleWorkspaceCheckout(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
-    checkoutGear(String(form.get('gear')), String(form.get('member')))
-    event.currentTarget.reset()
+    if (await checkoutGear(String(form.get('gear')), String(form.get('member')))) event.currentTarget.reset()
   }
 
-  function returnGear(item: Gear) {
+  async function returnGear(item: Gear) {
+    if (!supabase) return
     const member = item.memberId ? memberById.get(item.memberId) : undefined
+    const updatedAt = new Date().toISOString()
+    const { error } = await supabase.from('equipment').update({ member_id: null, updated_at: updatedAt }).eq('id', item.id)
+    if (error) {
+      setDataError(error.message)
+      return
+    }
     setGear((items) => items.map((entry) => entry.id === item.id ? { ...entry, memberId: null, updatedAt: new Date().toISOString() } : entry))
-    logActivity('Returned', item, member?.name ?? 'Unknown member')
+    setDataError('')
+    await logActivity('Returned', item, member?.name ?? 'Unknown member')
   }
 
-  function removeGear(item: Gear) {
+  async function removeGear(item: Gear) {
     if (!window.confirm(`Remove ${item.name} from the inventory?`)) return
+    if (!supabase) return
+    const { error } = await supabase.from('equipment').delete().eq('id', item.id)
+    if (error) {
+      setDataError(error.message)
+      return
+    }
     setGear((items) => items.filter((entry) => entry.id !== item.id))
-    logActivity('Removed', item, item.memberId ? memberById.get(item.memberId)?.name ?? 'Unknown member' : 'Club inventory')
+    setDataError('')
+    await logActivity('Removed', item, item.memberId ? memberById.get(item.memberId)?.name ?? 'Unknown member' : 'Club inventory')
   }
 
   function toggleSort(key: SortKey) {
@@ -277,7 +422,8 @@ function App() {
     setSettingsSaved(true)
   }
 
-  function importMembers(csvText: string) {
+  async function importMembers(csvText: string) {
+    if (!supabase) throw new Error('The secure database is not configured.')
     const rows = parseCsv(csvText)
     if (rows.length < 2) throw new Error('The sheet is empty or has no member rows.')
     const headers = rows[0].map((header) => header.toLowerCase().replace(/[_-]/g, ' ').trim())
@@ -304,6 +450,14 @@ function App() {
       }]
     })
     if (imported.length === 0) throw new Error('No members with names were found in the sheet.')
+    const { error } = await supabase.from('members').upsert(imported.map((member) => ({
+      id: member.id,
+      name: member.name,
+      email: member.email,
+      phone: member.phone,
+      year: member.year,
+    })), { onConflict: 'id' })
+    if (error) throw error
     setMembers((existing) => {
       const updatedById = new Map(imported.map((member) => [member.id, member]))
       return [...existing.map((member) => updatedById.get(member.id) ?? member), ...imported.filter((member) => !existing.some((current) => current.id === member.id))]
@@ -323,7 +477,7 @@ function App() {
         }
         throw new Error(`Google Sheets returned HTTP ${response.status}.`)
       }
-      importMembers(await response.text())
+      await importMembers(await response.text())
     } catch (error) {
       setSyncMessage(error instanceof TypeError
         ? 'Google redirected this sheet to sign-in or blocked its CSV export. Set General access to Anyone with the link (Viewer), publish to the web, or import a CSV file. Private sheets require Google sign-in integration.'
@@ -337,10 +491,33 @@ function App() {
     if (!file) return
     setSyncMessage('')
     try {
-      importMembers(await file.text())
+      await importMembers(await file.text())
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Could not read this CSV file.')
     }
+  }
+
+  async function handleSignIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    setAuthError('')
+    setWorkspaceError('')
+    setIsSigningIn(true)
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
+      if (error) setAuthError(error.message)
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Could not sign in.')
+    } finally {
+      setIsSigningIn(false)
+    }
+  }
+
+  async function handleSignOut() {
+    if (!supabase) return
+    const { error } = await supabase.auth.signOut()
+    if (error) setAuthError(error.message)
+    setAuthPassword('')
   }
 
   const pageTitle = view === 'inventory' ? 'Equipment inventory' : view === 'loans' ? 'Issue / return' : view === 'members' ? 'Club members' : view === 'settings' ? 'Settings' : 'Recent activity'
@@ -353,6 +530,35 @@ function App() {
       : view === 'settings'
         ? 'Set the appearance and club details for this workspace.'
         : 'A record of equipment checkouts, returns, and removals.'
+
+  if (!isSupabaseConfigured) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><section className="auth-panel"><span className="eyebrow">SECURE WORKSPACE</span><h1>Database setup required</h1><p>Add your Supabase project URL and public anon key to a local <code>.env.local</code> file. Use <code>.env.example</code> as the template, then restart the dev server.</p><p>The database schema and executive-only row-level security policies are in <code>supabase/schema.sql</code>.</p></section></div>
+  }
+
+  if (!authReady) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><section className="auth-panel"><span className="eyebrow">SECURE WORKSPACE</span><h1>Checking session</h1><p>Connecting to the club workspace…</p></section></div>
+  }
+
+  if (!authUser) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><form className="auth-panel" onSubmit={handleSignIn}>
+      <span className="eyebrow">UNIVERSITY OF VIRGINIA · POOL CLUB</span>
+      <h1>Executive sign in</h1>
+      <p>Sign in with an approved club executive account.</p>
+      <label>Email<input type="email" autoComplete="username" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
+      <label>Password<input type="password" autoComplete="current-password" required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
+      {authError && <p className="gate-error" role="alert">{authError}</p>}
+      <button className="primary-button" type="submit" disabled={isSigningIn}>{isSigningIn ? 'Signing in…' : 'Sign in'}</button>
+      <p className="auth-footnote">Accounts are invited and approved by a club administrator.</p>
+    </form></div>
+  }
+
+  if (workspaceLoadedFor !== authUser.id && !workspaceError) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><section className="auth-panel"><span className="eyebrow">SECURE WORKSPACE</span><h1>Loading club data</h1><p>Verifying executive access and loading shared records…</p></section></div>
+  }
+
+  if (workspaceError || !workspaceAccess) {
+    return <div className={`auth-shell ${theme === 'dark' ? 'dark-auth' : ''}`}><section className="auth-panel"><span className="eyebrow">SECURE WORKSPACE</span><h1>{workspaceError ? 'Could not load club data' : 'Access not approved'}</h1><p>{workspaceError || 'Your account is not on the club executive access list. Contact a database administrator.'}</p><div className="gate-actions">{workspaceError && <button className="primary-button" onClick={() => { setWorkspaceError(''); setWorkspaceRetry((retry) => retry + 1) }}>Try again</button>}<button className="secondary-button" onClick={() => { void handleSignOut() }}>Sign out</button></div></section></div>
+  }
 
   return (
     <div className={`app-shell ${theme === 'dark' ? 'dark-theme' : ''}`}>
@@ -382,17 +588,18 @@ function App() {
         <div className="sidebar-bottom">
           <div className="side-note-icon"><Boxes size={17} /></div>
           <p>Equipment stays club property. Keep every handoff on record.</p>
-          <span className="local-status"><span /> Saved on this device</span>
+          <span className="local-status"><span /> Secure club workspace</span>
         </div>
       </aside>
 
       <main className="main-panel">
         <header className="topbar">
           <div className="breadcrumb"><span>{clubName}</span><span className="crumb-slash">/</span><strong>{pageTitle}</strong></div>
-          <div className="topbar-right"><span className="year-tag">{season}</span><span className="avatar">E</span><span className="exec-label">Executive</span></div>
+          <div className="topbar-right"><span className="year-tag">{season}</span><span className="avatar">{authUser.email?.[0]?.toUpperCase() ?? 'E'}</span><span className="exec-label">{authUser.email}</span><button className="icon-button sign-out-button" title="Sign out" aria-label="Sign out" onClick={() => { void handleSignOut() }}><LogOut size={16} /></button></div>
         </header>
 
         <div className="page-content">
+          {dataError && <div className="data-error" role="alert">{dataError}</div>}
           <section className="page-heading">
             <div>
               <div className="eyebrow">Club operations <span>·</span> {view === 'inventory' ? 'Equipment desk' : view === 'loans' ? 'Handoffs' : view === 'members' ? 'Roster' : 'Handoff log'}</div>
@@ -526,7 +733,7 @@ function App() {
               <div className="settings-actions"><p className="settings-saved" aria-live="polite">{settingsSaved ? 'All changes saved on this device.' : 'You have unsaved changes.'}</p><button className="primary-button" onClick={saveSettings}><Save size={16} /> Save settings</button></div>
             </section>
           )}
-          <footer className="page-footer"><span>{clubName} <span>·</span> Equipment desk</span><span>Local workspace <i /></span></footer>
+          <footer className="page-footer"><span>{clubName} <span>·</span> Equipment desk</span><span>Shared club data <i /></span></footer>
         </div>
       </main>
 
