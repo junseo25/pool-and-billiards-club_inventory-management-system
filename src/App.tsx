@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   ArrowDownToLine,
-  ArrowDownUp,
   ArrowUpDown,
   Boxes,
   Check,
@@ -804,10 +803,10 @@ function App() {
   return (
     <div className={`app-shell ${theme === 'dark' ? 'dark-theme' : ''}`}>
       <aside className="sidebar">
-        <a className="brand" href="#inventory" onClick={() => setView('inventory')}>
-          <span className="brand-mark"><ArrowDownUp size={19} strokeWidth={2.2} /></span>
+        <button className="brand" type="button" aria-label="Go to Issue / Return workspace" onClick={() => { setView('loans'); setQuery('') }}>
+          <img className="brand-mark" src={`${import.meta.env.BASE_URL}v-billiards-icon.png`} alt="" />
           <span><strong>{clubName}</strong><small>UNIVERSITY OF VIRGINIA</small></span>
-        </a>
+        </button>
         <div className="rail-label">Workspace</div>
         <nav className="main-nav" aria-label="Main navigation">
           <button className={view === 'loans' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('loans'); setQuery('') }}>
