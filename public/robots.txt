@@ -1,0 +1,7 @@
+# Do not crawl or scrape any part of this site.
+# Crawlers read this file only at the host root (/robots.txt).
+# For GitHub Pages project hosting, also publish a rule at
+# https://junseo25.github.io/robots.txt disallowing
+# /pool-and-billiards-club_inventory-management-system/
+User-agent: *
+Disallow: /
