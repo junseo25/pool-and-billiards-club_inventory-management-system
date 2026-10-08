@@ -69,23 +69,6 @@ function readStore<T,>(key: string, fallback: T): T {
   }
 }
 
-function serialPrefix(category: GearCategory) {
-  return category.slice(0, 2).toUpperCase()
-}
-
-function cueUseSuffix(cueUse: CueUse) {
-  if (cueUse === 'Playing') return 'P'
-  if (cueUse === 'Break') return 'B'
-  if (cueUse === 'Jump') return 'J'
-  return ''
-}
-
-function addCueUseSuffix(serial: string, cueUse: CueUse) {
-  const suffix = cueUseSuffix(cueUse)
-  if (!serial || !suffix) return serial
-  return `${serial.replace(/-[PBJ]$/i, '')}-${suffix}`
-}
-
 function formatDate(date: string) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(date))
 }
@@ -193,7 +176,7 @@ function App() {
   const [isSavingGear, setIsSavingGear] = useState(false)
   const [gearEditError, setGearEditError] = useState('')
   const [newGearCueUse, setNewGearCueUse] = useState<Exclude<CueUse, 'Not applicable'>>('Playing')
-  const [serialDigits, setSerialDigits] = useState('')
+  const [serialNumber, setSerialNumber] = useState('')
   const [view, setView] = useState<View>('inventory')
   const [modal, setModal] = useState<Modal>(null)
   const [query, setQuery] = useState('')
@@ -360,7 +343,7 @@ function App() {
   function editGear(item: Gear) {
     setNewGearCategory(item.category)
     setNewGearCueUse(item.cueUse === 'Not applicable' ? 'Playing' : item.cueUse)
-    setSerialDigits(item.serial.replace(/\D/g, ''))
+    setSerialNumber(item.serial)
     setGearEditError('')
     setModal({ kind: 'edit-gear', gearId: item.id })
   }
@@ -376,7 +359,7 @@ function App() {
     setGearEditError('')
     try {
       const { data, error } = await supabase.from('equipment').update({
-        name, serial: serialDigits ? addCueUseSuffix(`${serialPrefix(newGearCategory)}-${serialDigits}`, newGearCategory === 'Shaft' || newGearCategory === 'Butt' ? newGearCueUse : 'Not applicable') : '', category: newGearCategory,
+        name, serial: serialNumber.trim(), category: newGearCategory,
         cue_use: newGearCategory === 'Shaft' || newGearCategory === 'Butt' ? newGearCueUse : 'Not applicable',
       }).eq('id', gearId).select().single()
       if (error) throw error
@@ -397,7 +380,7 @@ function App() {
     const { data, error } = await supabase.from('equipment').insert({
       name: String(form.get('name')).trim(),
       category,
-      serial: serialDigits ? addCueUseSuffix(`${serialPrefix(category)}-${serialDigits}`, cueUse) : '',
+      serial: serialNumber.trim(),
       cue_use: cueUse,
       member_id: null,
       updated_at: updatedAt,
@@ -864,7 +847,7 @@ function App() {
               <p>{pageDescription}</p>
             </div>
             {(view === 'inventory' || view === 'members') && (
-              <button className="primary-button" onClick={() => { if (view === 'inventory') { setNewGearCategory('Case'); setNewGearCueUse('Playing'); setSerialDigits('') }; setModal({ kind: view === 'inventory' ? 'gear' : 'member' }) }}>
+              <button className="primary-button" onClick={() => { if (view === 'inventory') { setNewGearCategory('Case'); setNewGearCueUse('Playing'); setSerialNumber('') }; setModal({ kind: view === 'inventory' ? 'gear' : 'member' }) }}>
                 <Plus size={17} /> {view === 'inventory' ? 'Add equipment' : 'Add member'}
               </button>
             )}
@@ -1015,17 +998,17 @@ function App() {
             <div className="modal-actions"><button type="button" className="secondary-button" autoFocus disabled={isSavingYear} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button danger-button" disabled={isSavingYear || schoolYears.findIndex((year) => year.id === modal.yearId) <= 0}>{isSavingYear ? 'Deleting…' : 'Delete school year'}</button></div>
           </form>}
           {modal.kind === 'profile-member' && members.filter((member) => member.id === modal.memberId).map((member) => <MemberProfile key={member.id} member={member} gear={gear} onEdit={() => setModal({ kind: 'edit-member', memberId: member.id })} onHistory={() => { setModal(null); openHistory({ member: member.id }) }} />)}
-          {modal.kind === 'edit-gear' && <form className="modal-form" onSubmit={handleEditGear}>
-            <label>Equipment name<input name="name" required autoFocus disabled={isSavingGear} defaultValue={gear.find((item) => item.id === modal.gearId)?.name ?? ''} /></label>
-            <label>Inventory ID <span className="optional">OPTIONAL</span><span className="serial-entry"><span className="serial-prefix">{serialPrefix(newGearCategory)}-</span><input name="serialDigits" aria-label="Serial number digits" disabled={isSavingGear} inputMode="numeric" pattern="[0-9]*" placeholder="Enter numbers" value={serialDigits} onChange={(event) => setSerialDigits(event.target.value.replace(/\D/g, ''))} />{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <span className="serial-suffix">-{cueUseSuffix(newGearCueUse)}</span>}</span></label>
+          {modal.kind === 'edit-gear' && <form className="modal-form equipment-form" onSubmit={handleEditGear}>
+            <label>Equipment name<input name="name" required autoFocus disabled={isSavingGear} placeholder="e.g. Predator soft case" defaultValue={gear.find((item) => item.id === modal.gearId)?.name ?? ''} /></label>
             <div className="form-grid"><label>Equipment type<select disabled={isSavingGear} value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Shaft' || newGearCategory === 'Butt') && <label>Cue use<select disabled={isSavingGear} value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
+            <label>Manufacturer serial number <span className="optional">OPTIONAL</span><input name="serialNumber" disabled={isSavingGear} placeholder="Enter manufacturer's serial number" value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label>
             {gearEditError && <p className="gate-error" role="alert">{gearEditError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" disabled={isSavingGear} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button" disabled={isSavingGear}>{isSavingGear ? 'Saving…' : 'Save changes'}</button></div>
           </form>}
-          {modal.kind === 'gear' && <form className="modal-form" onSubmit={handleAddGear}>
+          {modal.kind === 'gear' && <form className="modal-form equipment-form" onSubmit={handleAddGear}>
             <label>Equipment name<input name="name" required placeholder="e.g. Predator soft case" autoFocus /></label>
-              <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
-            <label>Inventory ID <span className="optional">OPTIONAL</span><span className="serial-entry"><span className="serial-prefix">{serialPrefix(newGearCategory)}-</span><input name="serialDigits" aria-label="Serial number digits" inputMode="numeric" pattern="[0-9]*" maxLength={8} placeholder="Enter numbers" value={serialDigits} onChange={(event) => setSerialDigits(event.target.value.replace(/\D/g, ''))} />{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <span className="serial-suffix">-{cueUseSuffix(newGearCueUse)}</span>}</span></label>
+            <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
+            <label>Manufacturer serial number <span className="optional">OPTIONAL</span><input name="serialNumber" placeholder="Enter manufacturer's serial number" value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label>
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit"><Plus size={16} /> Add item</button></div>
           </form>}
           {(modal.kind === 'member' || modal.kind === 'edit-member') && <form className="modal-form" onSubmit={(event) => handleMemberSubmit(event, modal.kind === 'edit-member' ? modal.memberId : undefined)}>

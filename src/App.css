@@ -303,16 +303,12 @@
 .form-grid label { display: grid; gap: 6px; color: #50586a; font-size: 11px; font-weight: 600; }
 .modal-form input,
 .modal-form select { width: 100%; height: 39px; padding: 0 10px; border: 1px solid #dfe2e8; border-radius: 0; outline: none; background: #fff; color: #30384a; font: 12px 'Public Sans', sans-serif; }
-.serial-entry { display: flex; align-items: center; border: 1px solid #dfe2e8; background: #fff; }
-.serial-prefix { height: 37px; display: inline-flex; align-items: center; padding: 0 11px; border-right: 1px solid #dfe2e8; background: #f5f6f8; color: var(--uva-navy); font: 600 12px 'Public Sans', sans-serif; }
-.serial-entry input { min-width: 0; flex: 1; border: 0; background: transparent; }
-.serial-entry input:focus { box-shadow: none; }
-.serial-suffix { padding: 0 10px; color: #737989; font: 500 12px 'Public Sans', sans-serif; }
 .modal-form input:focus,
 .modal-form select:focus { border-color: #8991a3; box-shadow: 0 0 0 2px rgba(35, 45, 75, .09); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .optional { margin-left: 5px; color: #878d9a; font: 400 10px 'Public Sans', sans-serif; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 5px; }
+.equipment-form .modal-actions > .primary-button { min-width: 128px; }
 .modal-intro { color: #777e74; font-size: 12px; line-height: 1.6; }
 .modal-intro strong { color: var(--uva-navy); }
 .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f5f6f8; }
@@ -412,10 +408,6 @@
 .dark-theme .modal-form input,
 .dark-theme .modal-form select,
 .dark-theme .settings-fields input { border-color: #46516a; background: #1b2333; color: #e5e9f1; }
-.dark-theme .serial-entry { border-color: #46516a; background: #1b2333; }
-.dark-theme .serial-prefix { border-color: #46516a; background: #303a51; color: #fff; }
-.dark-theme .serial-entry input { border-color: transparent; background: transparent; }
-.dark-theme .serial-suffix { color: #c2c9d6; }
 .dark-theme .search-field input { color: #e5e9f1; }
 .dark-theme .search-field input::placeholder,
 .dark-theme .settings-fields input::placeholder { color: #929bad; }
