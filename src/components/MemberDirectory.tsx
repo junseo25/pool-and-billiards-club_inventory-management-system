@@ -6,10 +6,10 @@ export type DirectoryMember = {
   id: string; name: string; email: string; phone: string; year: string
   is_emeritus?: boolean; auth_user_id?: string | null
 }
-export default function MemberDirectory({ title, members, total, gear, search, invitingMemberId, onEdit, onInvite, onHistory, onDelete, onProfile }: {
+export default function MemberDirectory({ title, members, total, gear, search, note, invitingMemberId, onEdit, onInvite, onHistory, onDelete, onProfile }: {
   title: string; members: DirectoryMember[]; total: number
   gear: { id: string; name: string; serial: string; memberId: string | null }[]
-  search?: ReactNode; invitingMemberId: string | null
+  search?: ReactNode; note?: ReactNode; invitingMemberId: string | null
   onEdit: (member: DirectoryMember) => void; onInvite: (member: DirectoryMember) => void; onHistory: (member: DirectoryMember) => void
   onDelete: (member: DirectoryMember) => void
   onProfile: (member: DirectoryMember) => void
@@ -30,6 +30,7 @@ export default function MemberDirectory({ title, members, total, gear, search, i
       })}
       {!members.length && <tr><td className="empty-row" colSpan={6}>{total ? 'No members match your search.' : `No ${title === 'Emeritus' ? 'emeritus' : 'active'} members on file.`}</td></tr>}
     </tbody></table></div>
+    {note}
     <div className="table-footer"><span>SHOWING <strong>{members.length}</strong> OF <strong>{total}</strong> MEMBERS</span><span>{title === 'Emeritus' ? 'Outstanding loans are overdue until returned.' : 'Active club roster.'}</span></div>
   </section>
 }

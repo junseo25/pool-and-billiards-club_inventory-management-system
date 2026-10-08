@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   ArrowDownToLine,
   ArrowUpDown,
-  Boxes,
   Check,
   Clock3,
   LogOut,
@@ -29,6 +28,7 @@ import HistoryPanel, { type HistoryScope } from './components/HistoryPanel'
 import MemberDirectory from './components/MemberDirectory'
 import MemberProfile from './components/MemberProfile'
 import EquipmentLabel from './components/EquipmentLabel'
+import WorkspaceSummary from './components/WorkspaceSummary'
 import { isActiveMember } from './lib/membership'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
@@ -57,7 +57,7 @@ type Member = {
 }
 
 type View = 'inventory' | 'loans' | 'members' | 'activity' | 'settings'
-type Modal = { kind: 'edit-gear'; gearId: string } | { kind: 'profile-member'; memberId: string } | { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
+type Modal = { kind: 'edit-gear'; gearId: string } | { kind: 'delete-gear'; gearId: string } | { kind: 'delete-year'; yearId: string } | { kind: 'profile-member'; memberId: string } | { kind: 'gear' } | { kind: 'member' } | { kind: 'edit-member'; memberId: string } | { kind: 'merge-member'; memberId: string } | { kind: 'delete-member'; memberId: string } | { kind: 'checkout'; gearId: string } | null
 type SortKey = 'name' | 'category' | 'cueUse' | 'member' | 'updatedAt'
 
 function readStore<T,>(key: string, fallback: T): T {
@@ -172,6 +172,8 @@ function App() {
   const [isMerging, setIsMerging] = useState(false)
   const [isDeletingMember, setIsDeletingMember] = useState(false)
   const [deleteMemberError, setDeleteMemberError] = useState('')
+  const [isDeletingGear, setIsDeletingGear] = useState(false)
+  const [deleteGearError, setDeleteGearError] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [workspaceAccess, setWorkspaceAccess] = useState<boolean | null>(null)
   const [workspaceLoadedFor, setWorkspaceLoadedFor] = useState<string | null>(null)
@@ -473,13 +475,21 @@ function App() {
     setGear((items) => items.map((entry) => entry.id === item.id ? { ...entry, memberId: null, updatedAt: event.date } : entry))
   }
 
-  async function removeGear(item: Gear) {
-    if (!window.confirm(`Remove ${item.name} from the inventory?`)) return
-    if (!supabase) return
-    const event = await recordHandoff(item, 'Removed')
-    if (!event) return
-    setGear((items) => items.filter((entry) => entry.id !== item.id))
-    setDataError('')
+  async function handleDeleteGear(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || modal?.kind !== 'delete-gear' || isDeletingGear) return
+    const item = gear.find((entry) => entry.id === modal.gearId)
+    if (!item) return
+    setIsDeletingGear(true)
+    setDeleteGearError('')
+    try {
+      const handoff = await recordHandoff(item, 'Removed')
+      if (!handoff) { setDeleteGearError('Could not remove this equipment. Please try again.'); return }
+      setGear((items) => items.filter((entry) => entry.id !== item.id))
+      setDataError('')
+      setModal(null)
+    } catch (error) { setDeleteGearError(errorMessage(error, 'Could not remove this equipment.')) }
+    finally { setIsDeletingGear(false) }
   }
 
   function toggleSort(key: SortKey) {
@@ -513,9 +523,12 @@ function App() {
     finally { setIsSavingYear(false) }
   }
 
-  async function handleDeleteSchoolYear(year: SchoolYear, previous: SchoolYear) {
-    if (!supabase || isSavingYear) return
-    if (!window.confirm(`Delete school year ${year.label}? All its activity will move to ${previous.label}. No history or member/equipment information will be deleted.`)) return
+  async function handleDeleteSchoolYear(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || modal?.kind !== 'delete-year' || isSavingYear) return
+    const yearIndex = schoolYears.findIndex((year) => year.id === modal.yearId)
+    if (yearIndex <= 0) return
+    const year = schoolYears[yearIndex]
     setYearError('')
     setIsSavingYear(true)
     try {
@@ -523,6 +536,7 @@ function App() {
       if (error) throw error
       const years = data as SchoolYear[]
       setSchoolYears(years)
+      setModal(null)
       const latest = years.at(-1)
       if (latest) {
         const next = Number(latest.label.slice(0,4)) + 1
@@ -687,8 +701,12 @@ function App() {
 
   async function handleMerge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase || modal?.kind !== 'merge-member' || !mergeTargetId) return
+    if (!supabase || modal?.kind !== 'merge-member' || !mergeTargetId || isMerging) return
     const sourceId = modal.memberId
+    const duplicate = members.find((member) => member.id === sourceId)
+    const keptMember = members.find((member) => member.id === mergeTargetId)
+    if (!duplicate || !keptMember) return
+    if (!window.confirm(`Merge ${duplicate.name} into ${keptMember.name}? The duplicate member record will be deleted. Loans, history, and the account link will be kept on ${keptMember.name}.`)) return
     setMergeError('')
     setIsMerging(true)
     try {
@@ -710,7 +728,7 @@ function App() {
 
   async function handleDeleteMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase || modal?.kind !== 'delete-member') return
+    if (!supabase || modal?.kind !== 'delete-member' || isDeletingMember) return
     const memberId = modal.memberId
     setDeleteMemberError('')
     setIsDeletingMember(true)
@@ -826,8 +844,7 @@ function App() {
           </button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="side-note-icon"><Boxes size={17} /></div>
-          <p>Equipment stays club property. Keep every handoff on record.</p>
+          <p>© 2026 Jun Seo Lee</p>
           <span className="local-status"><span /> Secure club workspace</span>
         </div>
       </aside>
@@ -855,11 +872,11 @@ function App() {
 
           {view === 'inventory' && (
             <>
-              <section className="stats-row" aria-label="Inventory summary">
-                <div className="stat-block"><span className="stat-label">Total items</span><strong>{gear.length.toString().padStart(2, '0')}</strong><span className="stat-foot">registered in inventory</span></div>
-                <div className="stat-block"><span className="stat-label">On loan</span><strong>{loanedCount.toString().padStart(2, '0')}<i className="stat-dot loaned" /></strong><span className="stat-foot">with club members</span></div>
-                <div className="stat-block"><span className="stat-label">Available</span><strong>{availableCount.toString().padStart(2, '0')}<i className="stat-dot available" /></strong><span className="stat-foot">ready to be borrowed</span></div>
-              </section>
+              <WorkspaceSummary label="Inventory summary" items={[
+                { label: 'Total items', value: gear.length, description: 'registered in inventory' },
+                { label: 'On loan', value: loanedCount, description: 'with club members', dot: 'loaned' },
+                { label: 'Available', value: availableCount, description: 'ready to be borrowed', dot: 'available' },
+              ]} />
               <section className="ledger-section">
                 <div className="section-toolbar">
                   <div className="section-title"><h2>All equipment</h2><span>{gear.length} items</span></div>
@@ -884,13 +901,13 @@ function App() {
                           <td><span className={`cue-use ${item.cueUse.toLowerCase().replaceAll(' ', '-')}`}>{item.cueUse === 'Not applicable' ? '—' : `${item.cueUse} cue`}</span></td>
                           <td>{assignedMember ? <div className="member-cell"><span className="mini-avatar">{assignedMember.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span><span>{assignedMember.name}</span></div> : item.memberId ? <span className="equipment-unverified">Borrower missing — review loan</span> : <span className="reserve-label"><i />In reserve</span>}</td>
                           <td className="date-cell">{formatDate(item.updatedAt)}</td>
-                          <td><div className="row-actions">
+                          <td><div className="member-actions equipment-actions">
+                            <button className="text-action" aria-label={`History for ${item.name}`} onClick={() => openHistory({ gear: item.id })}><Clock3 size={14} /> History</button>
+                            <button className="text-action" aria-label={`Edit ${item.name}`} onClick={() => editGear(item)}><Pencil size={14} /> Edit</button>
                             {item.memberId
-                              ? <button className="text-action return-action" onClick={() => returnGear(item)}><ArrowDownToLine size={15} /> Return</button>
-                              : <button className="text-action issue-action" onClick={() => setModal({ kind: 'checkout', gearId: item.id })} disabled={activeMembers.length === 0}><ArrowUpDown size={15} /> Issue</button>}
-                            <button className="text-action" aria-label={`History for ${item.name}`} onClick={() => openHistory({ gear: item.id })}><Clock3 size={15} /> History</button>
-                            <button className="text-action" aria-label={`Edit ${item.name}`} onClick={() => editGear(item)}><Pencil size={15} /> Edit</button>
-                            <button className="icon-button delete-button" title="Remove equipment" aria-label={`Remove ${item.name}`} onClick={() => removeGear(item)}><Trash2 size={15} /></button>
+                              ? <button className="text-action return-action" aria-label={`Return ${item.name}`} onClick={() => returnGear(item)}><ArrowDownToLine size={14} /> Return</button>
+                              : <button className="text-action" aria-label={`Issue ${item.name}`} onClick={() => setModal({ kind: 'checkout', gearId: item.id })} disabled={activeMembers.length === 0}><ArrowUpDown size={14} /> Issue</button>}
+                            <button type="button" className="text-action danger-text" aria-label={`Delete equipment: ${item.name}`} onClick={() => { setDeleteGearError(''); setModal({ kind: 'delete-gear', gearId: item.id }) }}><Trash2 size={14} /> Delete</button>
                           </div></td>
                         </tr>
                       })}
@@ -935,13 +952,18 @@ function App() {
           {view === 'members' && (
             <>
               {reviewingProfileDuplicates && !ownMember?.profile_completed_at && <div className="profile-reminder"><span>Merge the matching duplicates, then finish your contact details.</span><button className="secondary-button" onClick={() => { setReviewingProfileDuplicates(false); setProfileError('') }}>Finish profile</button></div>}
-              <section className="member-summary"><div><span className="stat-label">ACTIVE ROSTER</span><strong>{activeMembers.length.toString().padStart(2, '0')}</strong><span className="stat-foot">members on file</span></div><div><span className="stat-label">CURRENT LOANS</span><strong>{loanedCount.toString().padStart(2, '0')}</strong><span className="stat-foot">items assigned to members</span></div><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import CSV or Excel roster"><ArrowDownToLine size={15} /><input type="file" aria-label="Import CSV or Excel roster" disabled={isSyncing} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import CSV / Excel (.xlsx).'}</span></div></section>
-              <div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>
+              <WorkspaceSummary label="Member summary" items={[
+                { label: 'Active roster', value: activeMembers.length, description: 'members on file' },
+                { label: 'Emeritus', value: emeritusMembers.length, description: 'former club members' },
+                { label: 'Current loans', value: loanedCount, description: 'items assigned to members' },
+              ]} />
               <MemberDirectory title="Active member directory" members={visibleMembers.filter(isActiveMember)} total={activeMembers.length} gear={gear} invitingMemberId={invitingMemberId}
+                note={<div className="member-invitation-note"><p>Invitations give members executive access to the workspace.</p>{invitationMessage && <p role="status">{invitationMessage}</p>}</div>}
                 search={<label className="search-field"><Search size={16} /><input aria-label="Search active and emeritus members" placeholder="Search all members" value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>/</kbd></label>}
                 onProfile={(member) => setModal({ kind: 'profile-member', memberId: member.id })} onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
               <MemberDirectory title="Emeritus" members={visibleMembers.filter((member) => member.is_emeritus)} total={emeritusMembers.length} gear={gear} invitingMemberId={invitingMemberId}
                 onProfile={(member) => setModal({ kind: 'profile-member', memberId: member.id })} onDelete={(member) => confirmDeleteMember(member.id)} onEdit={(member) => setModal({ kind: 'edit-member', memberId: member.id })} onInvite={(member) => { void inviteMember(member) }} onHistory={(member) => openHistory({ member: member.id })} />
+              <section className="ledger-section roster-source-panel"><div className="roster-import"><div className="import-heading"><div><span className="stat-label">ROSTER SOURCE</span><strong>Google Sheets</strong></div><span className="sync-mark"><RefreshCw size={15} /></span></div><div className="sheet-controls"><input aria-label="Google Sheets URL" type="url" placeholder="Paste a public Sheets link" value={sheetUrl} onChange={(event) => setSheetUrl(event.target.value)} /><button onClick={syncSheet} disabled={!sheetUrl.trim() || isSyncing}>{isSyncing ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />} Sync</button><label className="file-import" title="Import CSV or Excel roster"><ArrowDownToLine size={15} /><input type="file" aria-label="Import CSV or Excel roster" disabled={isSyncing} accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { void importCsvFile(event.target.files?.[0]); event.currentTarget.value = '' }} /></label></div><span className={`sync-message ${syncMessage && !syncMessage.includes('synced') ? 'sync-error' : ''}`}>{syncMessage || 'Share with Anyone with the link (Viewer), or import CSV / Excel (.xlsx).'}</span></div></section>
             </>
           )}
 
@@ -969,7 +991,7 @@ function App() {
                   {latestYear && <p className="school-year-note">Start after {latestYear.start_date}. Earlier activity stays in its original school year.</p>}
                   {yearError && <p className="gate-error" role="alert">{yearError}</p>}
                   <button type="submit" className="primary-button" disabled={isSavingYear}>{isSavingYear ? 'Saving school year…' : 'Save new school year'}</button>
-                  <ul className="school-year-list">{schoolYears.map((year,index) => <li key={year.id}><div className="school-year-actions"><strong>{year.label}</strong><button type="button" className="text-action danger-text" disabled={isSavingYear || index === 0} title={index === 0 ? 'The first school year has no previous year to receive its history' : `Move history to ${schoolYears[index-1].label}`} onClick={() => { void handleDeleteSchoolYear(year, schoolYears[index-1]) }}>Delete</button></div><span>From {year.start_date}{schoolYears[index+1] ? ` · until ${schoolYears[index+1].start_date} (exclusive)` : ' · open until the next school year'}</span>{index === 0 && <span>The first school year cannot be deleted because it has no previous year.</span>}</li>)}</ul>
+                  <ul className="school-year-list">{schoolYears.map((year,index) => <li key={year.id}><div className="school-year-actions"><strong>{year.label}</strong><button type="button" className="text-action danger-text" disabled={isSavingYear || index === 0} title={index === 0 ? 'The first school year has no previous year to receive its history' : `Move history to ${schoolYears[index-1].label}`} onClick={() => { setYearError(''); setModal({ kind: 'delete-year', yearId: year.id }) }}>Delete</button></div><span>From {year.start_date}{schoolYears[index+1] ? ` · until ${schoolYears[index+1].start_date} (exclusive)` : ' · open until the next school year'}</span>{index === 0 && <span>The first school year cannot be deleted because it has no previous year.</span>}</li>)}</ul>
                 </div>
               </form>
             </section>
@@ -978,9 +1000,20 @@ function App() {
         </div>
       </main>
 
-      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging && !isDeletingMember && !isSavingGear) setModal(null) }}>
+      {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isMerging && !isDeletingMember && !isDeletingGear && !isSavingGear && !isSavingYear) setModal(null) }}>
         <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'edit-gear' ? 'Edit equipment' : modal.kind === 'profile-member' ? 'Member profile' : modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember || isSavingGear} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          <div className="modal-heading"><div><span className="eyebrow">EQUIPMENT DESK</span><h2 id="modal-title">{modal.kind === 'edit-gear' ? 'Edit equipment' : modal.kind === 'delete-gear' ? 'Delete equipment' : modal.kind === 'delete-year' ? 'Delete school year' : modal.kind === 'profile-member' ? 'Member profile' : modal.kind === 'gear' ? 'Add equipment' : modal.kind === 'member' ? 'Add a member' : modal.kind === 'edit-member' ? 'Edit member' : modal.kind === 'merge-member' ? 'Merge duplicate member' : modal.kind === 'delete-member' ? 'Delete member' : 'Issue equipment'}</h2></div><button className="icon-button close-button" disabled={isMerging || isDeletingMember || isDeletingGear || isSavingGear || isSavingYear} onClick={() => setModal(null)} aria-label="Close dialog"><X size={19} /></button></div>
+          {modal.kind === 'delete-gear' && <form className="modal-form" onSubmit={handleDeleteGear}>
+            <p className="modal-intro">Are you sure you want to delete <strong>{gear.find((item) => item.id === modal.gearId)?.name}</strong> from the inventory? Its equipment and handoff history will be kept.</p>
+            {gear.find((item) => item.id === modal.gearId)?.memberId && <p className="modal-intro">This equipment is currently on loan. Deleting it also removes the active loan; its history will be kept.</p>}
+            {deleteGearError && <p className="gate-error" role="alert">{deleteGearError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" autoFocus disabled={isDeletingGear} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button danger-button" disabled={isDeletingGear || !gear.some((item) => item.id === modal.gearId)}>{isDeletingGear ? 'Deleting…' : 'Delete equipment'}</button></div>
+          </form>}
+          {modal.kind === 'delete-year' && <form className="modal-form" onSubmit={handleDeleteSchoolYear}>
+            <p className="modal-intro">Are you sure you want to delete school year <strong>{schoolYears.find((year) => year.id === modal.yearId)?.label}</strong>? All its activity will move to <strong>{schoolYears[schoolYears.findIndex((year) => year.id === modal.yearId) - 1]?.label}</strong>. History, members, and equipment will be kept.</p>
+            {yearError && <p className="gate-error" role="alert">{yearError}</p>}
+            <div className="modal-actions"><button type="button" className="secondary-button" autoFocus disabled={isSavingYear} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button danger-button" disabled={isSavingYear || schoolYears.findIndex((year) => year.id === modal.yearId) <= 0}>{isSavingYear ? 'Deleting…' : 'Delete school year'}</button></div>
+          </form>}
           {modal.kind === 'profile-member' && members.filter((member) => member.id === modal.memberId).map((member) => <MemberProfile key={member.id} member={member} gear={gear} onEdit={() => setModal({ kind: 'edit-member', memberId: member.id })} onHistory={() => { setModal(null); openHistory({ member: member.id }) }} />)}
           {modal.kind === 'edit-gear' && <form className="modal-form" onSubmit={handleEditGear}>
             <label>Equipment name<input name="name" required autoFocus disabled={isSavingGear} defaultValue={gear.find((item) => item.id === modal.gearId)?.name ?? ''} /></label>
@@ -1008,13 +1041,13 @@ function App() {
             <div className="modal-actions"><button type="button" className="secondary-button" disabled={isMerging} onClick={() => setModal({ kind: 'edit-member', memberId: modal.memberId })}>Back</button><button className="primary-button" type="submit" disabled={isMerging || !mergeTargetId}>{isMerging ? 'Merging…' : 'Merge members'}</button></div>
           </form>}
           {modal.kind === 'delete-member' && <form className="modal-form" onSubmit={handleDeleteMember}>
-            <p className="modal-intro">Delete <strong>{members.find((member) => member.id === modal.memberId)?.name}</strong> from the directory? Their equipment and handoff history will be kept.</p>
+            <p className="modal-intro">Are you sure you want to delete <strong>{members.find((member) => member.id === modal.memberId)?.name}</strong> from the directory? Their equipment and handoff history will be kept.</p>
             {members.find((member) => member.id === modal.memberId)?.auth_user_id && <p className="modal-intro">This also removes their executive access. Their Supabase sign-in account remains.</p>}
             {gear.some((item) => item.memberId === modal.memberId) && <p className="gate-error" role="alert">Return or reassign all equipment before deleting this member.</p>}
             {members.find((member) => member.id === modal.memberId)?.auth_user_id === authUser.id && <p className="gate-error" role="alert">You cannot delete your own account. Another executive must do this.</p>}
             <p className="modal-intro">A future roster import can add this person again if they are still in the source sheet.</p>
             {deleteMemberError && <p className="gate-error" role="alert">{deleteMemberError}</p>}
-            <div className="modal-actions"><button type="button" className="secondary-button" disabled={isDeletingMember} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button danger-button" disabled={isDeletingMember || gear.some((item) => item.memberId === modal.memberId) || members.find((member) => member.id === modal.memberId)?.auth_user_id === authUser.id}>{isDeletingMember ? 'Deleting…' : 'Delete member'}</button></div>
+            <div className="modal-actions"><button type="button" className="secondary-button" autoFocus disabled={isDeletingMember} onClick={() => setModal(null)}>Cancel</button><button type="submit" className="primary-button danger-button" disabled={isDeletingMember || gear.some((item) => item.memberId === modal.memberId) || members.find((member) => member.id === modal.memberId)?.auth_user_id === authUser.id}>{isDeletingMember ? 'Deleting…' : 'Delete member'}</button></div>
           </form>}
           {modal.kind === 'checkout' && <form className="modal-form" onSubmit={(event) => handleCheckout(event, modal.gearId)}>
             <p className="modal-intro">Select the member borrowing <strong>{gear.find((item) => item.id === modal.gearId)?.name}</strong>.</p><label>Issue to<select name="member" required defaultValue=""><option value="" disabled>Select a member</option>{activeMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>

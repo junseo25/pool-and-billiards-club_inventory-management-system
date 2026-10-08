@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ArrowDownToLine, ArrowUpDown, Package, Trash2 } from 'lucide-react'
 import { equipmentKey, equipmentType, filterHistory, memberKey, type Activity, type HistoryFilters, type SchoolYear } from '../lib/history'
+import WorkspaceSummary from './WorkspaceSummary'
 
 type GearOption = { id: string; name: string; serial: string }
 type MemberOption = { id: string; name: string; email: string }
@@ -43,8 +44,15 @@ export default function HistoryPanel({ entries, gear, members, schoolYears, scop
     const key = mode === 'equipment' ? equipmentKey(entry) : memberKey(entry) || 'club-inventory'
     groups.set(key, [...(groups.get(key) ?? []), entry])
   }
-  return <section className="ledger-section activity-ledger">
-    <div className="history-heading"><div><h2>Equipment and member history</h2><p>Follow each item or member across school years, including every recorded handoff.</p></div></div>
+  return <>
+    <WorkspaceSummary label="History summary" items={[
+      { label: 'Recorded events', value: entries.length, description: 'equipment and member activity' },
+      { label: 'Equipment history', value: new Set(entries.map(equipmentKey)).size, description: 'items with recorded activity' },
+      { label: 'School years', value: years.length, description: 'available in history' },
+    ]} />
+    <section className="ledger-section activity-ledger">
+    <div className="section-toolbar"><div className="section-title"><h2>Equipment and member history</h2><span>{entries.length} EVENTS</span></div></div>
+    <p className="history-intro">Follow each item or member across school years, including every recorded handoff.</p>
     <div className="history-modes" role="group" aria-label="History view">{(['equipment', 'members', 'handoffs'] as const).map((value) => <button key={value} className={mode === value ? 'selected' : ''} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === 'equipment' ? 'Equipment history' : value === 'members' ? 'Member history' : 'Handoff log'}</button>)}</div>
     <div className="history-filters">
       <label>School year<select value={filters.schoolYear} onChange={(event) => change('schoolYear', event.target.value)}><option value="">All school years</option>{years.map((year) => <option key={year}>{year}</option>)}</select></label>
@@ -60,5 +68,6 @@ export default function HistoryPanel({ entries, gear, members, schoolYears, scop
       : [...groups].map(([key, events]) => <section className="history-group" key={key}><header><h3>{mode === 'equipment' ? gearOptions.get(key) : memberOptions.get(key) || 'Club inventory'}</h3><span>{events.length} event{events.length === 1 ? '' : 's'}</span></header><div className="activity-list">{events.map((entry) => <HistoryEvent key={entry.id} entry={entry} />)}</div></section>)}
     {!filtered.length && <div className="empty-row">{entries.length ? 'No history matches these filters.' : 'No activity has been recorded yet.'}</div>}
     <div className="table-footer"><span>{years.length} SCHOOL YEAR{years.length === 1 ? '' : 'S'}</span><span>History stays available after equipment is removed.</span></div>
-  </section>
+    </section>
+  </>
 }
