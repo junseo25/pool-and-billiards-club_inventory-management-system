@@ -1,3 +1,5 @@
+import { computingId, computingIdFromEmail } from './identity.ts'
+
 const emailPattern = /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/gi
 
 function emailsIn(value: string) {
@@ -26,11 +28,16 @@ export function rosterRows(rows: string[][]) {
   const emailColumn = uvaColumn >= 0 ? uvaColumn : column('email', 'email address', 'e mail')
   const phoneColumn = column('phone', 'phone number', 'mobile', 'contact number')
   const yearColumn = column('year', 'class year', 'graduation year', 'grad year')
+  const idColumn = column('uva id', 'computing id', 'uva computing id', 'uva computing identifier')
   if (nameColumn < 0 && firstNameColumn < 0) throw new Error('Add a "Name" or "First name" column to the sheet.')
   const imported = rows.slice(1).flatMap((values) => {
     const name = (nameColumn >= 0 ? values[nameColumn] ?? '' : `${values[firstNameColumn] ?? ''} ${lastNameColumn >= 0 ? values[lastNameColumn] ?? '' : ''}`).trim()
     if (!name) return []
-    return [{ name, email: findRosterEmail(values, emailColumn, name),
+    const email = findRosterEmail(values, emailColumn, name)
+    const rawId = idColumn >= 0 ? (values[idColumn] ?? '').trim() : ''
+    const uvaId = rawId ? computingId(rawId) : computingIdFromEmail(email)
+    if (rawId && !uvaId) throw new Error(`Enter a valid UVA computing ID for ${name}, without @virginia.edu.`)
+    return [{ name, email, ...(uvaId ? { uva_id: uvaId } : {}),
       phone: phoneColumn >= 0 ? values[phoneColumn] ?? '' : '',
       year: yearColumn >= 0 ? values[yearColumn] ?? '' : '' }]
   })

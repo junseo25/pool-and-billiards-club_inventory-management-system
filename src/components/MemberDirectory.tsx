@@ -4,6 +4,7 @@ import { formatUsPhone } from '../lib/phone'
 
 export type DirectoryMember = {
   id: string; name: string; email: string; phone: string; year: string
+  uva_id?: string | null
   is_emeritus?: boolean; auth_user_id?: string | null
 }
 export default function MemberDirectory({ title, members, total, gear, search, note, invitingMemberId, onEdit, onInvite, onHistory, onDelete, onProfile }: {
@@ -20,7 +21,7 @@ export default function MemberDirectory({ title, members, total, gear, search, n
       {members.map((member) => {
         const assigned = gear.filter((item) => item.memberId === member.id)
         return <tr key={member.id}>
-          <td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0,2)}</span><strong>{member.name}</strong></div></td>
+          <td><div className="member-profile"><span className="profile-avatar">{member.name.split(' ').map((part) => part[0]).join('').slice(0,2)}</span><div className="member-identity"><strong>{member.name}</strong><small>UVA ID: {member.uva_id || 'Not provided'}</small></div></div></td>
           <td><div className="contact-lines">{member.email ? <a href={`mailto:${member.email}`}><Mail size={14} />{member.email}</a> : <span className="muted">No email</span>}</div></td>
           <td><div className="contact-lines">{member.phone ? <span><Phone size={14} />{formatUsPhone(member.phone)}</span> : <span className="muted">No phone</span>}</div></td>
           <td>{member.year ? <span className="year-value">' {member.year.slice(-2)}</span> : <span className="muted">—</span>}</td>

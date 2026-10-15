@@ -11,6 +11,7 @@ export default function MemberProfile({ member, gear, onHistory, onEdit }: {
   return <div className="modal-form member-profile-details">
     <h3>{member.name}</h3>
     <dl className="profile-details">
+      <div><dt>UVA computing ID</dt><dd>{member.uva_id || 'Not provided'}</dd></div>
       <div><dt>Membership</dt><dd>{member.is_emeritus ? 'Emeritus' : 'Active member'}</dd></div>
       <div><dt>UVA Email</dt><dd>{member.email ? <a href={`mailto:${member.email}`}>{member.email}</a> : 'No email'}</dd></div>
       <div><dt>Phone</dt><dd>{member.phone ? <a href={`tel:${member.phone}`}>{formatUsPhone(member.phone)}</a> : 'No phone'}</dd></div>

@@ -40,13 +40,20 @@ function harness(handler, serialNumber) {
 
 test('adding and editing equipment preserve manufacturer serials without automatic formatting', async () => {
   for (const handler of ['handleAddGear', 'handleEditGear']) {
-    for (const serial of ['0000123456789012', 'MEZZ-001/X', 'SH-0042-P', '', '  00042  ']) {
+    for (const serial of ['0000123456789012', 'MEZZ-001/X', 'SH-0042-P', '  00042  ', ...(handler === 'handleEditGear' ? [''] : [])]) {
       const state = harness(handler, serial)
       await state.submit()
       assert.equal(state.saved().serial, serial.trim())
       assert.equal(state.context.modal, null)
     }
   }
+})
+
+test('new equipment requires a serial number while legacy blank serials remain editable', async () => {
+  const state = harness('handleAddGear', '   ')
+  await state.submit()
+  assert.equal(state.saved(), undefined)
+  assert.match(state.context.dataError, /serial number/)
 })
 
 test('opening equipment editing retains the full stored serial, including legacy IDs', () => {

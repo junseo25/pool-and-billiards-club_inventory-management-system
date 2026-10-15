@@ -1,3 +1,4 @@
+import { insertLegacyMember } from './legacy-fixtures.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -26,11 +27,14 @@ test('first-login profile matches an earlier roster; manual merges keep loans an
     `)
     await db.exec(await readFile(new URL('../supabase/schema.sql', import.meta.url), 'utf8'))
     await db.exec(await readFile(new URL('../supabase/migrations/20261001_profiles_invitations_merges.sql', import.meta.url), 'utf8'))
-    const original = (await db.query("insert into members(name,email,phone,year) values('Alex Smith','old@virginia.edu','+1 434 555 0123','2027') returning id")).rows[0].id
+    await db.exec(await readFile(new URL('../supabase/migrations/20261014_collect_identifiers.sql', import.meta.url), 'utf8'))
+    const original = (await insertLegacyMember(db, "insert into members(name,email,phone,year) values('Alex Smith','old@virginia.edu','+1 434 555 0123','2027') returning id")).rows[0].id
     await db.exec(`insert into auth.users(id,email,invited_at) values
       ('00000000-0000-0000-0000-000000000001','new@virginia.edu',now());`)
     const placeholder = (await db.query('select id from members where auth_user_id=auth.uid()')).rows[0].id
-    await db.query("insert into equipment(name, category, member_id) values ('Old loan', 'Case', $1), ('New loan', 'Case', $2)", [original, placeholder])
+    const loans = (await db.query("insert into equipment(name,category,serial) values ('Old loan','Case','profiles-and-merges.test.mjs-1'), ('New loan','Case','profiles-and-merges.test.mjs-2') returning id")).rows
+    await db.query("select * from record_equipment_handoff($1,'Checked out',$2)", [loans[0].id, original])
+    await db.query("select * from record_equipment_handoff($1,'Checked out',$2)", [loans[1].id, placeholder])
     await assert.rejects(db.query("select * from complete_executive_profile('Alex Smith','123')"), /10-digit/)
     const profile = (await db.query("select * from complete_executive_profile(' Alex   Smith ','4345550123')")).rows[0]
     assert.equal(profile.id, original)
@@ -41,7 +45,7 @@ test('first-login profile matches an earlier roster; manual merges keep loans an
     assert.equal((await db.query('select * from members')).rows.length, 1)
     assert.ok((await db.query('select member_id from equipment')).rows.every((row) => row.member_id === original))
     assert.equal((await db.query("select * from complete_executive_profile('Alex Smith','4345550123')")).rows[0].id, original, 'profile retry is idempotent')
-    const keeper = (await db.query("insert into members(name,email,phone) values('Alex S','','') returning id")).rows[0].id
+    const keeper = (await insertLegacyMember(db, "insert into members(name,email,phone) values('Alex S','','') returning id")).rows[0].id
     await db.query('select * from merge_members($1,$2)', [original, keeper])
     const merged = (await db.query('select * from members where id=$1', [keeper])).rows[0]
     assert.equal(merged.email, 'old@virginia.edu')

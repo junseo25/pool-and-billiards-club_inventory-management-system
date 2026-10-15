@@ -38,6 +38,48 @@ A responsive inventory and checkout application for the University of Virginia P
 
 The app intentionally has no self-service sign-up. Sending a Supabase administrator invitation grants executive access automatically. Accounts created without an invitation do not receive access. The SQL schema does not grant browser clients permission to add themselves to that allowlist.
 
+### Database migration order
+
+For a new project, run `supabase/schema.sql` once. It contains one current definition of each application function and applies atomically. Existing projects should apply these files in the following order, skipping upgrades already applied:
+
+1. `20261001_approve_invited_executives.sql`
+2. `20261001_executive_roster.sql`
+3. `20261001_profiles_invitations_merges.sql`
+4. `20261001_school_year_history.sql`
+5. `20261001_emeritus_members.sql`
+6. `20261001_delete_members.sql`
+7. `20261001_delete_school_years.sql`
+8. `20261001_school_year_update_guard.sql`
+9. `20261001_database_function_cleanup.sql`
+10. `20261001_internal_function_access.sql`
+11. `20261001_security_advisor_hardening.sql`
+12. `20261014_collect_identifiers.sql`
+
+All files are in `supabase/migrations/`. Run identifier collection after the security-advisor hardening; older migrations replace functions with earlier versions. The cleanup, hardening, and collection scripts are safe to repeat and preserve club records. They also reload the PostgREST schema cache. A GitHub push does not apply database migrations. The optional primary-key promotion in `supabase/migrations/manual/` is not part of this sequence.
+
+### Database functions
+
+| Application RPC | Behavior |
+| --- | --- |
+| `is_club_executive()` | Checks the current account for RLS and executive access. |
+| `sync_member_roster(roster)` | Imports an array of member objects atomically, matching normalized email or name and phone. |
+| `complete_executive_profile(full_name, phone_number)` | Completes the caller's profile and merges a matching roster record. |
+| `merge_members(duplicate_id, keep_id)` | Transfers loans, login links, and history references while preserving snapshots and emeritus status. |
+| `record_equipment_handoff(equipment_id, operation, borrower_id)` | Checks out, returns, or removes equipment together with its activity record. |
+| `delete_member(member_id_to_delete)` | Protects outstanding loans and the caller's account, and revokes a deleted executive's access. |
+| `start_school_year(year_label, year_start)` | Creates a later period and reassigns existing events using Eastern Time boundaries. |
+| `delete_school_year(year_id_to_delete)` | Transfers history into the preceding period and protects the first year. |
+
+Every mutation RPC checks executive access. Internal helpers and trigger functions are unavailable to browser roles. Browser clients can add and edit member contact/membership fields and equipment metadata; loan assignments, member/equipment deletion, login links, and activity writes go through guarded functions. Equipment is added to reserve before checkout. The existing Add/Edit forms remain compatible.
+
+The eight public RPCs run with caller permissions (`SECURITY INVOKER`). The executive lookup reads only the account's own RLS-protected access record. The seven mutation RPCs forward to guarded `SECURITY DEFINER` implementations in `club_private`. That schema must remain outside the Data API's exposed schemas. Authenticated callers have only schema usage and execution of those seven guarded implementations; they cannot create functions there, and anonymous callers have no access. Server-side service-role callers retain access. RPC names, arguments, return types, and recorded actor identity remain unchanged.
+
+The cleanup rejects null/non-array rosters and non-object entries without partial imports, prevents invitations from replacing another account's member link, and coordinates school-year deletion with activity insertion using a shared advisory lock. It removes the competing table lock that could deadlock an activity insert. Checkout also locks the active borrower's row until commit so a concurrent membership edit cannot bypass the emeritus restriction.
+
+The internal-function access migration revokes browser execution of Supabase's `rls_auto_enable()` helper when present, while preserving its automatic-RLS event trigger. The security-advisor hardening removes elevated execution from all exposed application functions. Regression tests cover both public wrappers and private implementations, executive-only authorization, anonymous denial, actor identity, and repeatable upgrades.
+
+Leaked-password protection is an Auth service setting, not a SQL migration. Supabase currently provides it on [Pro plans and above](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection). Keep public signups disabled for this invitation-only app. Invitations and existing account logins remain available.
+
 ## Invitation links
 
 ### Executive profiles, invitations, and merging
@@ -86,12 +128,13 @@ Vite prints the local URL, usually `http://localhost:5173/`. Without valid Supab
 
 ## Data model and access
 
-The database contains four tables:
+The database contains five tables:
 
 - `executive_access` maps approved Supabase Auth user IDs to executive accounts.
 - `members` stores member names and contact details.
 - `equipment` stores equipment and its current member assignment.
-- `activity_log` stores checkout, return, and removal events.
+- `activity_log` stores addition, checkout, return, and removal events with historical snapshots.
+- `school_years` defines the shared history periods and their start dates.
 
 All approved executives share the same club records. RLS checks the signed-in user against `executive_access` on every data request. The client uses only the Supabase public anon key; never put a Supabase `service_role` key in this repository or in browser code.
 
@@ -136,6 +179,38 @@ Imports support public Google Sheets CSV exports, CSV uploads, and Excel `.xlsx`
 The current sync reads a CSV export in the browser. The sheet must allow **Anyone with the link (Viewer)** access or be published to the web; anyone with the link can therefore read that sheet. Private-sheet OAuth is not implemented. CSV uploads are also supported and are saved to the secured Supabase members table.
 
 Supported headers include `Name` (or `Full name`, `Member`, or `Member name`), or `First name` and `Last name`, plus optional `Email`, `Phone`, and `Year` fields.
+
+## Computing IDs and manufacturer serials
+
+Identifiers are collected before changing primary keys. Existing records, loans,
+and history retain their UUID links. New members need a **UVA computing ID** (the
+email username, such as `abc1de`), not the numeric student ID. New equipment needs
+its manufacturer serial. IDs appear beneath member names and in profiles, and
+are searchable. Computing IDs become lowercase; serials preserve case, separators,
+and leading zeros.
+
+For an existing database, apply the previously documented upgrades, including
+`20261001_database_function_cleanup.sql`, `20261001_internal_function_access.sql`,
+and `20261001_security_advisor_hardening.sql`, then run
+`supabase/migrations/20261014_collect_identifiers.sql` **before deploying this frontend**.
+Fresh installations use `supabase/schema.sql`, which includes this collection stage.
+
+Collection fills IDs only from unambiguous UVA email usernames. Missing or
+ambiguous legacy values remain editable; records are never deleted or assigned
+made-up identifiers. New or changed identifiers cannot duplicate another record,
+and assigned identifiers cannot be cleared. Roster imports accept `UVA ID`,
+`Computing ID`, or `UVA Computing ID`, or derive IDs from valid UVA emails.
+Legacy rows can still match by contact details, but new rows without IDs reject
+the entire import. Members with conflicting computing IDs cannot be merged.
+Executives using a non-UVA sign-in email supply their computing ID in profile setup.
+
+Later, correct all missing and duplicate values and run
+`supabase/identifier-audit.sql`; all four queries must return zero rows. Only then
+manually run `supabase/migrations/manual/20261014_promote_identifier_primary_keys.sql`.
+This deferred migration makes `members.uva_id` and `equipment.serial` primary keys
+and retains UUIDs as unique alternate keys for existing foreign keys, RPCs, and
+history. It aborts transactionally if any identifier is missing, invalid, or
+duplicated. Keep this manual migration out of automatic deployment.
 
 ## Repository layout
 

@@ -1,3 +1,4 @@
+import { insertLegacyMember } from './legacy-fixtures.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -46,7 +47,7 @@ test('school years, atomic handoffs, archived equipment and merged member histor
     await db.exec(await readFile(new URL('../supabase/migrations/20261001_school_year_history.sql', import.meta.url), 'utf8'))
     await db.exec(`insert into auth.users(id,email,invited_at,raw_user_meta_data) values('00000000-0000-0000-0000-000000000001','exec@virginia.edu',now(),'{"full_name":"Executive"}');`)
     assert.equal((await db.query('select * from school_years')).rows[0].start_date.toISOString().slice(0,10), '2026-08-25')
-    const borrower = (await db.query("insert into members(name,email,phone) values('Alex Smith','alex@virginia.edu','4345550123') returning id")).rows[0].id
+    const borrower = (await insertLegacyMember(db, "insert into members(name,email,phone) values('Alex Smith','alex@virginia.edu','4345550123') returning id")).rows[0].id
     await db.query("select * from sync_member_roster($1::jsonb)", [JSON.stringify([{ name: 'Alex Smith', email: 'alex-new@virginia.edu', phone: '(434) 555-0123' }])])
     assert.equal((await db.query("select id from members where email='alex-new@virginia.edu'")).rows[0].id, borrower, 'new UVA email enriches the matching name and phone record')
     const item = (await db.query("insert into equipment(name,category,cue_use,serial) values('Playing shaft','Shaft','Playing','SH-123-P') returning id")).rows[0].id
@@ -58,7 +59,7 @@ test('school years, atomic handoffs, archived equipment and merged member histor
     assert.equal(checkout.actor_name, 'Executive')
     await assert.rejects(db.query("select * from record_equipment_handoff($1,'Checked out',$2)", [item, borrower]), /already checked out/)
     assert.equal((await db.query('select * from activity_log where gear_id=$1', [item])).rows.length, 2, 'failed handoff adds no duplicate log')
-    const keeper = (await db.query("insert into members(name) values('Alex') returning id")).rows[0].id
+    const keeper = (await insertLegacyMember(db, "insert into members(name) values('Alex') returning id")).rows[0].id
     await db.query('select * from merge_members($1,$2)', [borrower, keeper])
     assert.equal((await db.query('select member_id from activity_log where id=$1', [checkout.id])).rows[0].member_id, keeper)
     assert.equal((await db.query('select member_name from activity_log where id=$1', [checkout.id])).rows[0].member_name, 'Alex Smith', 'snapshot name is preserved')
@@ -68,7 +69,7 @@ test('school years, atomic handoffs, archived equipment and merged member histor
     await db.query("select * from record_equipment_handoff($1,'Removed')", [item])
     assert.equal((await db.query('select * from equipment where id=$1', [item])).rows.length, 0)
     assert.equal((await db.query('select * from activity_log where gear_id=$1', [item])).rows.length, 4)
-    const failureItem = (await db.query("insert into equipment(name,category) values('Atomic case','Case') returning id")).rows[0].id
+    const failureItem = (await db.query("insert into equipment(name,category,serial) values ('Atomic case','Case','history-and-roster.test.mjs-1') returning id")).rows[0].id
     await db.exec("alter table activity_log add constraint test_log_failure check(action <> 'Checked out') not valid")
     await assert.rejects(db.query("select * from record_equipment_handoff($1,'Checked out',$2)", [failureItem, keeper]), /test_log_failure/)
     assert.equal((await db.query('select member_id from equipment where id=$1', [failureItem])).rows[0].member_id, null, 'failed history insert rolls back the loan')
@@ -85,6 +86,7 @@ test('school years, atomic handoffs, archived equipment and merged member histor
     await assert.rejects(db.query("select * from start_school_year('2028/30','2028-09-01')"), /consecutive/)
     assert.equal((await db.query('select * from school_years')).rows.length, 2)
     await db.exec(await readFile(new URL('../supabase/migrations/20261001_delete_school_years.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20261014_collect_identifiers.sql', import.meta.url), 'utf8'))
     await db.query("select * from start_school_year('2028/29','2028-09-01')")
     await db.exec("insert into activity_log(action,gear_name,member_name,created_at) values('Returned','Later','Alex','2028-10-01 12:00:00-04')")
     const years = (await db.query('select * from school_years order by start_date')).rows

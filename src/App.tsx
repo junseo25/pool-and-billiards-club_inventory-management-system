@@ -30,6 +30,7 @@ import MemberProfile from './components/MemberProfile'
 import EquipmentLabel from './components/EquipmentLabel'
 import WorkspaceSummary from './components/WorkspaceSummary'
 import { isActiveMember } from './lib/membership'
+import { computingId, computingIdFromEmail } from './lib/identity'
 
 type GearCategory = 'Case' | 'Shaft' | 'Butt' | 'Accessory'
 type CueUse = 'Playing' | 'Break' | 'Jump' | 'Not applicable'
@@ -46,6 +47,7 @@ type Gear = {
 
 type Member = {
   id: string
+  uva_id?: string | null
   name: string
   email: string
   phone: string
@@ -144,6 +146,7 @@ function App() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isSavingPassword, setIsSavingPassword] = useState(false)
   const [profileName, setProfileName] = useState('')
+  const [profileUvaId, setProfileUvaId] = useState('')
   const [profilePhone, setProfilePhone] = useState('')
   const [profileError, setProfileError] = useState('')
   const [isSavingProfile, setIsSavingProfile] = useState(false)
@@ -259,6 +262,7 @@ function App() {
           id: row.id,
           name: row.name,
           email: row.email,
+          uva_id: row.uva_id,
           phone: row.phone,
           year: row.year,
           auth_user_id: row.auth_user_id,
@@ -268,6 +272,7 @@ function App() {
         })))
         const ownMember = membersResult.data?.find((row) => row.auth_user_id === userId)
         setProfileName(ownMember?.name ?? '')
+        setProfileUvaId(ownMember?.uva_id ?? computingIdFromEmail(ownMember?.email ?? ''))
         setProfilePhone(ownMember?.phone ?? '')
         setActivity(activityRows)
         const periods = schoolYearResult.data as SchoolYear[]
@@ -322,7 +327,7 @@ function App() {
   }, [gear, memberById, query, sort])
 
   const visibleMembers = useMemo(() => members.filter((member) =>
-    [member.name, member.email, member.phone, member.year].some((value) => value.toLowerCase().includes(query.toLowerCase().trim())),
+    [member.name, member.uva_id ?? '', member.email, member.phone, member.year].some((value) => value.toLowerCase().includes(query.toLowerCase().trim())),
   ), [members, query])
 
   async function recordHandoff(item: Gear, operation: 'Checked out' | 'Returned' | 'Removed', memberId?: string) {
@@ -375,6 +380,7 @@ function App() {
     if (!supabase) return
     const form = new FormData(event.currentTarget)
     const category = form.get('category') as GearCategory
+    if (!serialNumber.trim()) { setDataError('Enter the manufacturer serial number for new equipment.'); return }
     const cueUse = category === 'Butt' || category === 'Shaft' ? form.get('cueUse') as CueUse : 'Not applicable'
     const updatedAt = new Date().toISOString()
     const { data, error } = await supabase.from('equipment').insert({
@@ -402,7 +408,11 @@ function App() {
     event.preventDefault()
     if (!supabase) return
     const form = new FormData(event.currentTarget)
+    const enteredId = String(form.get('uvaId') ?? '').trim()
+    const uvaId = computingId(enteredId)
+    if ((!memberId || enteredId) && !uvaId) { setDataError('Enter a UVA computing ID (the UVA email username).'); return }
     const memberData = {
+      uva_id: uvaId || null,
       name: String(form.get('name')).trim(),
       email: String(form.get('email')).trim(),
       phone: String(form.get('phone')).trim(),
@@ -650,6 +660,7 @@ function App() {
     try {
       const { error } = await supabase.rpc('complete_executive_profile', {
         full_name: String(form.get('fullName')).trim(), phone_number: String(form.get('phone')),
+        computing_id: profileUvaId,
       })
       if (error) throw error
       setWorkspaceLoadedFor(null)
@@ -793,6 +804,7 @@ function App() {
       <span className="eyebrow">EXECUTIVE PROFILE</span><h1>Your contact details</h1>
       <p>Add your name and U.S. phone number once so we can connect your account to any existing roster entry.</p>
       <label>Full name<input name="fullName" autoComplete="name" required value={profileName} onChange={(event) => setProfileName(event.target.value)} /></label>
+      <label>UVA computing ID<input name="uvaId" required pattern="[A-Za-z][A-Za-z0-9]*" placeholder="e.g. abc1de" value={profileUvaId} onChange={(event) => setProfileUvaId(event.target.value)} /></label>
       <label>Phone<PhoneInput key={`${authUser.id}:${profilePhone}`} defaultValue={profilePhone} required /></label>
       {profileError && <p className="gate-error" role="alert">{profileError}</p>}
       {profileError && <button className="secondary-button" type="button" disabled={isSavingProfile} onClick={() => { setView('members'); setReviewingProfileDuplicates(true) }}>Review duplicate members</button>}
@@ -1008,10 +1020,13 @@ function App() {
           {modal.kind === 'gear' && <form className="modal-form equipment-form" onSubmit={handleAddGear}>
             <label>Equipment name<input name="name" required placeholder="e.g. Predator soft case" autoFocus /></label>
             <div className="form-grid"><label>Equipment type<select name="category" value={newGearCategory} onChange={(event) => setNewGearCategory(event.target.value as GearCategory)}><option>Case</option><option>Shaft</option><option>Butt</option><option>Accessory</option></select></label>{(newGearCategory === 'Butt' || newGearCategory === 'Shaft') && <label>Cue use<select name="cueUse" value={newGearCueUse} onChange={(event) => setNewGearCueUse(event.target.value as Exclude<CueUse, 'Not applicable'>)}><option>Playing</option><option>Break</option><option>Jump</option></select></label>}</div>
-            <label>Manufacturer serial number <span className="optional">OPTIONAL</span><input name="serialNumber" placeholder="Enter manufacturer's serial number" value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label>
+            <label>Manufacturer serial number<input name="serialNumber" required placeholder="Enter manufacturer's serial number" value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label>
+            {dataError && <p className="gate-error" role="alert">{dataError}</p>}
             <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit"><Plus size={16} /> Add item</button></div>
           </form>}
           {(modal.kind === 'member' || modal.kind === 'edit-member') && <form className="modal-form" onSubmit={(event) => handleMemberSubmit(event, modal.kind === 'edit-member' ? modal.memberId : undefined)}>
+            {dataError && <p className="gate-error" role="alert">{dataError}</p>}
+            <label>UVA computing ID {modal.kind === 'edit-member' && <span className="optional">LEGACY RECORDS MAY BE BLANK</span>}<input name="uvaId" required={modal.kind === 'member' || Boolean(members.find((member) => member.id === modal.memberId)?.uva_id)} pattern="[A-Za-z][A-Za-z0-9]*" placeholder="e.g. abc1de" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.uva_id ?? '' : ''} /></label>
             <label>Membership<select name="membership" defaultValue={modal.kind === 'edit-member' && members.find((member) => member.id === modal.memberId)?.is_emeritus ? 'emeritus' : 'active'}><option value="active">Active member</option><option value="emeritus">Emeritus</option></select></label>
             <label>Full name<input name="name" required placeholder="Member name" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.name ?? '' : ''} autoFocus /></label><label>UVA Email<input name="email" type="email" placeholder="name@virginia.edu" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.email ?? '' : ''} /></label><div className="form-grid"><label>Phone<PhoneInput key={modal.kind === 'edit-member' ? modal.memberId : 'new-member'} defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.phone ?? '' : ''} /></label><label>Class year<input name="year" inputMode="numeric" placeholder="2027" defaultValue={modal.kind === 'edit-member' ? members.find((member) => member.id === modal.memberId)?.year ?? '' : ''} /></label></div>
             <div className="modal-actions">{modal.kind === 'edit-member' && <button type="button" className="secondary-button merge-launch" onClick={() => { setMergeTargetId(''); setMergeError(''); setModal({ kind: 'merge-member', memberId: modal.memberId }) }}>Merge duplicate</button>}<button type="button" className="secondary-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" type="submit">{modal.kind === 'edit-member' ? 'Save changes' : <><Plus size={16} /> Add member</>}</button></div>

@@ -246,6 +246,9 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 .member-table td { height: 63px; }
 .member-profile { display: flex; align-items: center; gap: 10px; color: #30384a; }
+.member-identity { min-width: 0; }
+.member-identity small { display: block; margin-top: 4px; color: #737989; font-size: 10px; overflow-wrap: anywhere; }
+.dark-theme .member-identity small { color: #b9c1cf; }
 .profile-avatar { width: 32px; height: 32px; font-size: 10px; }
 .contact-lines { display: grid; gap: 5px; }
 .contact-lines span { display: inline-flex; align-items: center; gap: 7px; color: #626b7c; font-size: 11px; }

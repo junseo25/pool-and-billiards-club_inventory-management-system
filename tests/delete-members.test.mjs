@@ -1,3 +1,4 @@
+import { insertLegacyMember } from './legacy-fixtures.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -13,12 +14,13 @@ test('member deletion protects loans and own account, preserves history, and rev
       create function auth.uid() returns uuid language sql as $$ select nullif(current_setting('test.user_id',true),'')::uuid $$;`)
     await db.exec(await readFile(new URL('../supabase/schema.sql', import.meta.url), 'utf8'))
     await db.exec(await readFile(new URL('../supabase/migrations/20261001_delete_members.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20261014_collect_identifiers.sql', import.meta.url), 'utf8'))
     await db.query("select set_config('test.user_id',$1,false)", [caller])
     await db.query('insert into auth.users(id,email,invited_at) values($1,$2,now()),($3,$4,now())', [caller,'exec@virginia.edu',other,'other@virginia.edu'])
     const own = (await db.query('select id from members where auth_user_id=$1', [caller])).rows[0].id
     await assert.rejects(db.query('select delete_member($1)', [own]), /cannot delete your own/)
-    const member = (await db.query("insert into members(name) values('Alex') returning id")).rows[0].id
-    const item = (await db.query("insert into equipment(name,category) values('Case','Case') returning id")).rows[0].id
+    const member = (await insertLegacyMember(db, "insert into members(name) values('Alex') returning id")).rows[0].id
+    const item = (await db.query("insert into equipment(name,category,serial) values ('Case','Case','delete-members.test.mjs-1') returning id")).rows[0].id
     await db.query("select * from record_equipment_handoff($1,'Checked out',$2)", [item,member])
     await assert.rejects(db.query('select delete_member($1)', [member]), /Return or reassign/)
     assert.equal((await db.query('select count(*)::int as n from members where id=$1', [member])).rows[0].n, 1)
